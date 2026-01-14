@@ -212,6 +212,7 @@ setup_torrent(
 		info->layout(),
 		rf,
 		test_path,
+		{},
 		storage_mode_allocate,
 		priorities,
 		sha1_hash{},
@@ -327,6 +328,7 @@ void run_storage_tests(std::shared_ptr<torrent_info const> info
 		fs,
 		rf,
 		cwd,
+		{},
 		storage_mode,
 		priorities,
 		sha1_hash{},
@@ -555,6 +557,7 @@ void test_pre_allocate()
 		info->layout(),
 		rf,
 		test_path,
+		{},
 		storage_mode_allocate,
 		priorities,
 		sha1_hash{},
@@ -701,6 +704,7 @@ void test_check_files(check_files_flag_t const flags
 		info->layout(),
 		rf,
 		test_path,
+		{},
 		(flags & sparse) ? storage_mode_sparse : storage_mode_allocate,
 		priorities,
 		sha1_hash{},
@@ -1671,6 +1675,7 @@ void test_unaligned_read(lt::disk_io_constructor_type constructor, Fun fun)
 	lt::storage_params params(fs
 		, rf
 		, save_path
+		, {}
 		, lt::storage_mode_sparse
 		, prios
 		, lt::sha1_hash("01234567890123456789")
