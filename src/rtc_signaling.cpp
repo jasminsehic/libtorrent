@@ -385,6 +385,9 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 
 		if (state == rtc::PeerConnection::State::Failed)
 		{
+#ifndef TORRENT_DISABLE_LOGGING
+			self->debug_log("*** RTC signaling PeerConnection state: failed");
+#endif
 			error_code const ec = boost::asio::error::connection_refused;
 			auto& io_context = self->m_io_context;
 
@@ -403,15 +406,32 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	pc->onGatheringStateChange(
 		[weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), handler_ = std::move(handler)](
 			rtc::PeerConnection::GatheringState state) {
-			// Warning: this is called from another thread
 			auto self = weak_this.lock();
 			auto pc_ = weak_pc.lock();
 			if (!self || !pc_)
 				return;
 
+			auto& io_context = self->m_io_context;
+
+#ifndef TORRENT_DISABLE_LOGGING
+			post(io_context, [self, state]() {
+				self->debug_log("*** RTC signaling gathering state callback: %d"
+					, int(state));
+			});
+#endif
+
 			if (state == rtc::PeerConnection::GatheringState::Complete)
 			{
-				auto& io_context = self->m_io_context;
+#ifndef TORRENT_DISABLE_LOGGING
+				post(io_context, [self]() {
+					self->debug_log("*** RTC signaling gathering complete");
+				});
+
+				post(io_context, [self]() {
+					self->debug_log("*** RTC signaling posting generated offer");
+				});
+#endif
+
 				auto description = *pc_->localDescription();
 				post(io_context, std::bind(std::move(handler_), error_code{}, description));
 			}
