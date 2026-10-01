@@ -975,6 +975,11 @@ if(webtorrent)
         target_link_libraries(torrent-rasterbar PUBLIC datachannel-static)
     endif()
     target_compile_definitions(torrent-rasterbar PRIVATE BOOST_JSON_HEADER_ONLY)
+
+	option(webtorrent-debug-log "forward libdatachannel's (very verbose) debug log to the session log, as log_alerts" OFF)
+	if (webtorrent-debug-log)
+		target_compile_definitions(torrent-rasterbar PRIVATE DEBUG_RTC=1)
+	endif()
 endif()
 
 if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
