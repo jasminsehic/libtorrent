@@ -79,6 +79,7 @@ websocket_tracker_connection::websocket_tracker_connection(
 	: tracker_connection(man, req, ios, cb)
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)
+	, m_announce_timer(ios)
 {
 	queue_request(req, std::move(cb));
 }
@@ -758,9 +759,9 @@ parse_websocket_tracker_response(span<char const> message, error_code& ec) try
 	// A successful tracker announce response must contain an interval.
 	// WebRTC offer/answer messages and tracker failure messages are handled
 	// separately above.
-	if (auto it = payload.find("interval"); it != payload.end())
+	if (auto interval_it = payload.find("interval"); interval_it != payload.end())
 	{
-		if (!it->value().is_int64())
+		if (!interval_it->value().is_int64())
 		{
 			ec = error_code(errors::invalid_tracker_response);
 			return "invalid interval";
@@ -779,7 +780,7 @@ parse_websocket_tracker_response(span<char const> message, error_code& ec) try
 			return default_val;
 		};
 
-		resp.interval = seconds32{it->value().as_int64()};
+		resp.interval = seconds32{interval_it->value().as_int64()};
 		resp.min_interval = seconds32{get_int64("min_interval", 60)};
 		resp.complete = int(get_int64("complete", -1));
 		resp.incomplete = int(get_int64("incomplete", -1));
