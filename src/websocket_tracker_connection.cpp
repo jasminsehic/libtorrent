@@ -117,6 +117,8 @@ void websocket_tracker_connection::close()
 
 void websocket_tracker_connection::close(error_code const& ec, operation_t const op)
 {
+	m_announce_timer.cancel();
+
 	if (m_websocket)
 	{
 		m_websocket->close();
@@ -209,6 +211,8 @@ bool websocket_tracker_connection::prune_non_stopped_requests()
 		it = m_callbacks.erase(it);
 	}
 
+	update_announce_timer();
+
 	return has_stopped;
 }
 
@@ -222,6 +226,28 @@ void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
 	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
 	if (is_open()) send_pending();
+}
+
+void websocket_tracker_connection::update_announce_timer()
+{
+	m_announce_timer.cancel();
+
+	time_point earliest = max_time();
+
+	for (auto const& [info_hash, entry] : m_callbacks)
+	{
+		if (entry.pending)
+			earliest = std::min(earliest, entry.deadline);
+	}
+
+	if (earliest == max_time())
+		return;
+
+	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	m_announce_timer.expires_at(earliest);
+	m_announce_timer.async_wait(
+		std::bind(&websocket_tracker_connection::on_announce_timeout
+			, shared_from_this(), _1));
 }
 
 void websocket_tracker_connection::send_pending()
@@ -249,15 +275,68 @@ void websocket_tracker_connection::send_pending()
 				auto const existing = m_callbacks.find(m.info_hash);
 				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
 #endif
-				m_callbacks[m.info_hash] = callback_entry{cb, m};
+				auto const& settings = m_man.settings();
+				auto const timeout = m.event == event_t::stopped
+					? settings.get_int(settings_pack::stop_tracker_timeout)
+					: settings.get_int(settings_pack::tracker_completion_timeout);
+
+				m_callbacks[m.info_hash] = callback_entry{
+					cb,
+					m,
+					true,
+					clock_type::now() + seconds(timeout)};
 			}
 
 			if (cb.lock())
 				m_requester = cb;
 
 			do_send(m);
+
+			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
+				update_announce_timer();
 		},
 		msg);
+}
+
+void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
+{
+	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
+
+	if (ec == boost::asio::error::operation_aborted)
+		return;
+
+	auto const now = clock_type::now();
+
+	std::vector<std::pair<std::weak_ptr<request_callback>, tracker_request>> timed_out;
+
+	for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
+	{
+		if (!it->second.pending || it->second.deadline > now)
+		{
+			++it;
+			continue;
+		}
+
+		it->second.pending = false;
+		timed_out.emplace_back(it->second.cb, it->second.req);
+		m_offer_quota.erase(it->first);
+		it = m_callbacks.erase(it);
+	}
+
+	for (auto const& [cb, req] : timed_out)
+	{
+		if (auto c = cb.lock())
+		{
+			c->tracker_request_error(
+				req,
+				errors::timed_out,
+				operation_t::timer,
+				"tracker announce timed out",
+				seconds32{120});
+		}
+	}
+
+	update_announce_timer();
 }
 
 void websocket_tracker_connection::do_send(tracker_request const& req)
@@ -446,6 +525,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
                 response.failure_reason,
                 seconds32{120}
             );
+
+			update_announce_timer();
         }
         else
         {
@@ -487,6 +568,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 				cit->second.pending = false;
 
 				cb->tracker_response(cit->second.req, {}, {}, *response.resp);
+
+				update_announce_timer();
 			}
 		}
 	}

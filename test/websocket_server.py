@@ -29,6 +29,12 @@ async def handle(websocket):
                 file=sys.stderr)
 
             request = json.loads(message)
+
+            # A negative min_interval is used by the timeout test to simulate
+            # a tracker that accepts the announce but never sends a response.
+            if int(sys.argv[2]) < 0:
+                continue
+
             response = {}
             response["info_hash"] = request["info_hash"]
             response["interval"] = 120

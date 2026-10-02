@@ -19,6 +19,7 @@ see LICENSE file.
 
 #include "libtorrent/aux_/rtc_signaling.hpp" // for rtc_offer and rtc_answer
 #include "libtorrent/aux_/websocket_stream.hpp"
+#include "libtorrent/aux_/deadline_timer.hpp"
 #include "libtorrent/error_code.hpp"
 #include "libtorrent/io_context.hpp"
 #include "libtorrent/peer_id.hpp"
@@ -84,6 +85,8 @@ private:
 	void on_connect(error_code const& ec);
 	void on_read(error_code ec, std::size_t bytes_read);
 	void on_write(error_code const& ec, std::size_t bytes_written);
+	void update_announce_timer();
+	void on_announce_timeout(error_code const& ec);
 	// wraps tracker_connection::fail
 	void fail(error_code const& ec, operation_t op);
 	// does the actual work of close(); takes the real failure reason so
@@ -113,6 +116,7 @@ private:
 		std::weak_ptr<request_callback> cb;
 		tracker_request req;
 		bool pending = true;
+		time_point deadline;
 	};
 	// on_read() holds an iterator into m_callbacks across a reentrant call
 	// into cb->on_rtc_offer()/on_rtc_answer(), which may indirectly insert
@@ -122,6 +126,8 @@ private:
 	// iterator across that call.
 	std::map<sha1_hash, callback_entry> m_callbacks;
 	std::map<sha1_hash, int> m_offer_quota;
+
+	deadline_timer m_announce_timer;
 
 	bool m_sending = false;
 };
