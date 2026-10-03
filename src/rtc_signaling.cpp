@@ -191,9 +191,6 @@ void rtc_signaling::generate_offers(int const count, offers_handler handler)
 
 		try
 		{
-			if (m_offer_creation_hook)
-				m_offer_creation_hook();
-
 			auto& conn = create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid]
 				(error_code const& ec, std::string sdp)
 			{
@@ -210,6 +207,11 @@ void rtc_signaling::generate_offers(int const count, offers_handler handler)
 			});
 
 			conn.batch_id = batch_id;
+
+			// test hook, called where libdatachannel may throw (e.g. when it
+			// can't open a UDP socket), once the connection already exists
+			if (m_offer_creation_hook)
+				m_offer_creation_hook();
 
 			auto dc = conn.peer_connection->createDataChannel("webtorrent");
 			dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
@@ -385,59 +387,61 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 
 		if (state == rtc::PeerConnection::State::Failed)
 		{
-#ifndef TORRENT_DISABLE_LOGGING
-			self->debug_log("*** RTC signaling PeerConnection state: failed");
-#endif
-			error_code const ec = boost::asio::error::connection_refused;
 			auto& io_context = self->m_io_context;
-
+#ifndef TORRENT_DISABLE_LOGGING
+			// debug_log() must be called on the network thread
+			post(io_context, [self]() {
+				self->debug_log("*** RTC signaling PeerConnection state: failed");
+			});
+#endif
+			// on_data_channel() also reports the failure to the offer's
+			// batch, if its description hadn't been generated yet
 			post(io_context, std::bind(&rtc_signaling::on_data_channel
-				, self
-				, ec
+				, std::move(self)
+				, error_code(boost::asio::error::connection_refused)
 				, offer_id
 				, nullptr
 			));
 		}
 	});
 
-pc->onGatheringStateChange(
-	[weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id](
-		rtc::PeerConnection::GatheringState state) {
+	pc->onGatheringStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id]
+		(rtc::PeerConnection::GatheringState state)
+	{
+		// Warning: this is called from another thread
 		auto self = weak_this.lock();
 		auto pc_ = weak_pc.lock();
-		if (!self || !pc_)
-			return;
+		if (!self || !pc_) return;
 
 		auto& io_context = self->m_io_context;
 
 #ifndef TORRENT_DISABLE_LOGGING
 		post(io_context, [self, state]() {
-			self->debug_log("*** RTC signaling gathering state callback: %d"
-				, int(state));
+			self->debug_log("*** RTC signaling gathering state: %d", int(state));
 		});
 #endif
 
-		if (state == rtc::PeerConnection::GatheringState::Complete)
+		if (state != rtc::PeerConnection::GatheringState::Complete) return;
+
+		auto const description = pc_->localDescription();
+		if (!description)
 		{
-#ifndef TORRENT_DISABLE_LOGGING
-			post(io_context, [self]() {
-				self->debug_log("*** RTC signaling gathering complete");
-			});
-
-			post(io_context, [self]() {
-				self->debug_log("*** RTC signaling posting generated offer");
-			});
-#endif
-
-			auto description = *pc_->localDescription();
-
-			post(io_context, std::bind(
-				&rtc_signaling::on_description_generated,
-				self,
-				error_code{},
-				offer_id,
-				std::move(description)));
+			// gathering completed without a local description, which
+			// means it can't be used. Report it rather than dereferencing
+			// an empty optional
+			post(io_context, std::bind(&rtc_signaling::on_description_generated
+				, std::move(self)
+				, error_code(boost::asio::error::connection_refused)
+				, offer_id
+				, std::string()));
+			return;
 		}
+
+		post(io_context, std::bind(&rtc_signaling::on_description_generated
+			, std::move(self)
+			, error_code{}
+			, offer_id
+			, std::string(*description)));
 	});
 
 	pc->onDataChannel([weak_this = weak_from_this(), offer_id]
@@ -510,18 +514,16 @@ void rtc_signaling::on_description_generated(
 	rtc_offer_id offer_id,
 	std::string description)
 {
-	auto it = m_connections.find(offer_id);
-	if (it == m_connections.end())
-		return;
+	auto const it = m_connections.find(offer_id);
 
-	if (ec)
-		on_description_generated(ec, offer_id, {});
+	// the connection is gone if it already failed or timed out, in which
+	// case its outcome was reported then
+	if (it == m_connections.end()) return;
 
-	auto handler = std::move(it->second.handler);
-	it->second.description_handler = {};
-
-	if (handler)
-		handler(ec, description);
+	// the handler is only ever invoked once per connection. Clearing it
+	// guarantees that even if gathering were to complete more than once
+	auto const handler = std::exchange(it->second.handler, description_handler{});
+	if (handler) handler(ec, description);
 }
 
 void rtc_signaling::on_generated_offer(error_code const& ec, rtc_offer offer)

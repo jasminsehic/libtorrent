@@ -81,7 +81,9 @@ websocket_tracker_connection::websocket_tracker_connection(
 	, m_ssl_context(req.ssl_ctx)
 	, m_announce_timer(ios)
 {
-	queue_request(req, std::move(cb));
+	// not queue_request(): arming the announce timer requires
+	// shared_from_this(), which isn't available yet. start() arms it
+	m_pending.emplace_back(tracker_message{req}, std::move(cb), request_deadline(req));
 }
 
 void websocket_tracker_connection::start()
@@ -108,6 +110,9 @@ void websocket_tracker_connection::start()
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
 	m_websocket->async_connect(req.url, std::bind(&websocket_tracker_connection::on_connect
 			, shared_from_this(), _1));
+
+	// the requests' deadlines also cover establishing the connection
+	update_announce_timer();
 }
 
 void websocket_tracker_connection::close()
@@ -128,7 +133,8 @@ void websocket_tracker_connection::close(error_code const& ec, operation_t const
 
 	while (!m_pending.empty())
 	{
-		auto [msg, callback] = std::move(m_pending.front());
+		auto [msg, callback, deadline] = std::move(m_pending.front());
+		TORRENT_UNUSED(deadline);
 		m_pending.pop_front();
 		if (callback.lock())
 		{
@@ -219,14 +225,33 @@ bool websocket_tracker_connection::prune_non_stopped_requests()
 
 void websocket_tracker_connection::queue_request(tracker_request req, std::weak_ptr<request_callback> cb)
 {
-	m_pending.emplace_back(tracker_message{std::move(req)}, cb);
+	time_point const deadline = request_deadline(req);
+	m_pending.emplace_back(tracker_message{std::move(req)}, cb, deadline);
+
+	// the deadline applies while the request is still queued too, e.g. if
+	// the connection is never established
+	update_announce_timer();
+
 	if (is_open()) send_pending();
 }
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
+	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{}
+		, max_time());
 	if (is_open()) send_pending();
+}
+
+time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
+{
+	auto const& settings = m_man.settings();
+	int const timeout = req.event == event_t::stopped
+		? settings.get_int(settings_pack::stop_tracker_timeout)
+		: settings.get_int(settings_pack::tracker_completion_timeout);
+
+	// a timeout of 0 (or less) disables it
+	if (timeout <= 0) return max_time();
+	return clock_type::now() + seconds(timeout);
 }
 
 void websocket_tracker_connection::update_announce_timer()
@@ -239,6 +264,12 @@ void websocket_tracker_connection::update_announce_timer()
 	{
 		if (entry.pending)
 			earliest = std::min(earliest, entry.deadline);
+	}
+
+	for (auto const& item : m_pending)
+	{
+		if (std::holds_alternative<tracker_request>(std::get<0>(item)))
+			earliest = std::min(earliest, std::get<2>(item));
 	}
 
 	if (earliest == max_time())
@@ -257,11 +288,11 @@ void websocket_tracker_connection::send_pending()
 
 	m_sending = true;
 
-	auto [msg, callback] = std::move(m_pending.front());
+	auto [msg, callback, deadline] = std::move(m_pending.front());
 	m_pending.pop_front();
 
 	std::visit(
-		[this, cb = callback](auto const& m) {
+		[this, cb = callback, deadline = deadline](auto const& m) {
 			// record every sent request, even ones whose callback has
 			// already expired, so m_callbacks always reflects whether the
 			// connection's current request is still pending (used by
@@ -276,16 +307,13 @@ void websocket_tracker_connection::send_pending()
 				auto const existing = m_callbacks.find(m.info_hash);
 				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
 #endif
-				auto const& settings = m_man.settings();
-				auto const timeout = m.event == event_t::stopped
-					? settings.get_int(settings_pack::stop_tracker_timeout)
-					: settings.get_int(settings_pack::tracker_completion_timeout);
-
+				// the deadline was set when the request was queued
 				m_callbacks[m.info_hash] = callback_entry{
 					cb,
 					m,
 					true,
-					clock_type::now() + seconds(timeout)};
+					deadline,
+					clock_type::now()};
 			}
 
 			if (cb.lock())
@@ -310,6 +338,11 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 
 	std::vector<std::pair<std::weak_ptr<request_callback>, tracker_request>> timed_out;
 
+	// set if the timeouts suggest the connection itself is dead, rather
+	// than the tracker not responding to some request (e.g. aquatic
+	// silently drops announces in some cases)
+	bool connection_dead = false;
+
 	for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
 	{
 		if (!it->second.pending || it->second.deadline > now)
@@ -318,11 +351,44 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 			continue;
 		}
 
-		it->second.pending = false;
+		// nothing at all was received since this request was sent, not
+		// even responses to other torrents' requests
+		if (m_last_receive <= it->second.sent)
+			connection_dead = true;
+
 		timed_out.emplace_back(it->second.cb, it->second.req);
 		m_offer_quota.erase(it->first);
 		it = m_callbacks.erase(it);
 	}
+
+	// requests that couldn't even be sent before their deadline. The
+	// connection is stuck connecting, or writing
+	auto const pending_end = std::remove_if(m_pending.begin(), m_pending.end()
+		, [&](auto const& item)
+	{
+		auto const* req = std::get_if<tracker_request>(&std::get<0>(item));
+		if (!req || std::get<2>(item) > now) return false;
+
+		connection_dead = true;
+		timed_out.emplace_back(std::get<1>(item), *req);
+		return true;
+	});
+	m_pending.erase(pending_end, m_pending.end());
+
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+	{
+		cb->debug_log("*** WEBSOCKET_TRACKER_TIMEOUT [ url: %s timed-out: %d connection-dead: %d ]"
+			, tracker_req().url.c_str(), int(timed_out.size()), int(connection_dead));
+	}
+#endif
+
+	// close a dead connection first, so that requests issued in response
+	// to the errors reported below are sent on a new connection instead of
+	// being queued on this one. close() reports any other request still
+	// outstanding on this connection
+	if (connection_dead)
+		close(error::timed_out, operation_t::timer);
 
 	for (auto const& [cb, req] : timed_out)
 	{
@@ -337,7 +403,8 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 		}
 	}
 
-	update_announce_timer();
+	if (!connection_dead)
+		update_announce_timer();
 }
 
 void websocket_tracker_connection::do_send(tracker_request const& req)
@@ -345,41 +412,7 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 	m_req = req;
 	m_offer_quota[req.info_hash] = req.num_want;
 
-	json::object payload;
-	payload["action"] = "announce";
-	payload["info_hash"] = latin1_utf8(req.info_hash);
-	payload["uploaded"] = req.uploaded;
-	payload["downloaded"] = req.downloaded;
-	payload["left"] = req.left;
-	payload["corrupt"] = req.corrupt;
-	payload["numwant"] = req.num_want;
-
-	char str_key[9];
-	std::snprintf(str_key, sizeof(str_key), "%08X", req.key);
-	payload["key"] = str_key;
-
-	if (req.event != event_t::none)
-	{
-		static const char* event_string[] = { "completed", "started", "stopped", "paused" };
-		int event_index = static_cast<int>(req.event) - 1;
-		TORRENT_ASSERT(event_index >= 0 && event_index < 4);
-		payload["event"] = event_string[event_index];
-	}
-
-	payload["peer_id"] = latin1_utf8(req.pid);
-
-	json::array &offers_array = payload["offers"].emplace_array();
-	for (auto const& offer : req.offers)
-	{
-		json::object payload_offer;
-		payload_offer["offer_id"] = latin1_utf8(offer.id);
-		json::object &obj = payload_offer["offer"].emplace_object();
-		obj["type"] = "offer";
-		obj["sdp"] = offer.sdp;
-		offers_array.emplace_back(std::move(payload_offer));
-	}
-
-	std::string const data = json::serialize(payload);
+	std::string const data = websocket_tracker_announce_message(req);
 	m_write_data.assign(data.begin(), data.end());
 
 #ifndef TORRENT_DISABLE_LOGGING
@@ -460,6 +493,7 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 		return;
 	}
 
+	m_last_receive = clock_type::now();
 	send_pending();
 	do_read();
 }
@@ -481,6 +515,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		return;
 	}
 
+	m_last_receive = clock_type::now();
+
 	auto const& buf = m_read_buffer.data();
 
 #ifndef TORRENT_DISABLE_LOGGING
@@ -499,8 +535,13 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 			cb->debug_log("*** WEBSOCKET_TRACKER_READ [ ERROR: %s ]", std::get<std::string>(ret).c_str());
 		}
 #endif
-		fail(ec, operation_t::handshake);
-		close(ec, operation_t::handshake);
+		// this connection is shared by every torrent announcing to this
+		// tracker, so a single message we can't make sense of (e.g. a
+		// failure reason without an info_hash, which both reference
+		// trackers send for requests they can't parse) must not tear it
+		// down for all of them. Ignore it; a request it may have been the
+		// response to will time out
+		do_read();
 		return;
 	}
 
@@ -514,23 +555,37 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 
 	if (cb)
 	{
-        if (!response.failure_reason.empty())
-        {
-            // Mark pending as false so close() will not issue a duplicate error callback
-            cit->second.pending = false;
+		if (!response.failure_reason.empty())
+		{
+			// a failure reason is only the outcome of our announce if one
+			// is outstanding. Otherwise it refers to something else, e.g.
+			// aquatic reports an answer of ours for an offer it no longer
+			// knows about this way, and must not be reported as a failed
+			// announce
+			if (cit->second.pending)
+			{
+				// mark it so close() won't also report an error for it
+				cit->second.pending = false;
 
-            cb->tracker_request_error(
-                cit->second.req,
-                errors::tracker_failure,
-                operation_t::bittorrent,
-                response.failure_reason,
-                seconds32{120}
-            );
+				cb->tracker_request_error(
+					cit->second.req,
+					errors::tracker_failure,
+					operation_t::bittorrent,
+					response.failure_reason,
+					seconds32{120});
 
-			update_announce_timer();
-        }
-        else
-        {
+				update_announce_timer();
+			}
+#ifndef TORRENT_DISABLE_LOGGING
+			else if (auto cb_ = requester())
+			{
+				cb_->debug_log("*** WEBSOCKET_TRACKER_READ [ ignoring failure reason, no announce outstanding: %s ]"
+					, response.failure_reason.c_str());
+			}
+#endif
+		}
+		else
+		{
 			if (response.offer)
 			{
 				auto const quota = m_offer_quota.find(response.info_hash);
@@ -558,7 +613,20 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 				cb->on_rtc_answer(*response.answer);
 			}
 
-			if (response.resp)
+			// a response is only the outcome of our announce if one is
+			// outstanding. Otherwise it's a duplicate, or a response to a
+			// message that isn't an announce of ours (e.g. aquatic also
+			// responds to the announces carrying our answers), which must
+			// not be taken as a new announce outcome (it would postpone our
+			// next announce)
+			if (response.resp && !cit->second.pending)
+			{
+#ifndef TORRENT_DISABLE_LOGGING
+				if (auto cb_ = requester())
+					cb_->debug_log("*** WEBSOCKET_TRACKER_READ [ ignoring response, no announce outstanding ]");
+#endif
+			}
+			else if (response.resp)
 			{
 				response.resp->interval = std::max(response.resp->interval
 					, seconds32{m_man.settings().get_int(settings_pack::min_websocket_announce_interval)});
@@ -615,6 +683,49 @@ void websocket_tracker_connection::fail(error_code const& ec, operation_t const 
 	m_req_pending = false;
 
 	tracker_connection::fail(ec, op, ec.message().c_str(), seconds32{120}, seconds32{120});
+}
+
+TORRENT_EXTRA_EXPORT std::string websocket_tracker_announce_message(tracker_request const& req)
+{
+	json::object payload;
+	payload["action"] = "announce";
+	payload["info_hash"] = latin1_utf8(req.info_hash);
+	payload["uploaded"] = req.uploaded;
+	payload["downloaded"] = req.downloaded;
+	payload["left"] = req.left;
+	payload["corrupt"] = req.corrupt;
+	payload["numwant"] = req.num_want;
+
+	char str_key[9];
+	std::snprintf(str_key, sizeof(str_key), "%08X", req.key);
+	payload["key"] = str_key;
+
+	// the "paused" event (BEP 21, sent by partial seeds) isn't part of the
+	// WebTorrent tracker protocol. aquatic rejects announces with it (with
+	// a failure reason that can't even be attributed to the announce), so
+	// send it as a regular announce instead, i.e. without an event
+	if (req.event != event_t::none && req.event != event_t::paused)
+	{
+		static const char* event_string[] = { "completed", "started", "stopped" };
+		int const event_index = static_cast<int>(req.event) - 1;
+		TORRENT_ASSERT(event_index >= 0 && event_index < 3);
+		payload["event"] = event_string[event_index];
+	}
+
+	payload["peer_id"] = latin1_utf8(req.pid);
+
+	json::array &offers_array = payload["offers"].emplace_array();
+	for (auto const& offer : req.offers)
+	{
+		json::object payload_offer;
+		payload_offer["offer_id"] = latin1_utf8(offer.id);
+		json::object &obj = payload_offer["offer"].emplace_object();
+		obj["type"] = "offer";
+		obj["sdp"] = offer.sdp;
+		offers_array.emplace_back(std::move(payload_offer));
+	}
+
+	return json::serialize(payload);
 }
 
 TORRENT_EXTRA_EXPORT std::variant<websocket_tracker_response, std::string>

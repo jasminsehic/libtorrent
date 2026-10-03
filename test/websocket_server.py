@@ -17,7 +17,29 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+# the number of connections accepted so far
+connections = 0
+
+
 async def handle(websocket):
+    global connections
+    connections += 1
+    connection_index = connections
+
+    # the tracker behavior to simulate:
+    # normal: respond to every announce
+    # silent: never respond
+    # silent-first-connection: never respond on the first connection, respond
+    #   normally on any later connection
+    # failure: respond to every announce with a failure reason
+    # bare-failure: send a failure reason without an info_hash (like trackers
+    #   do for requests they can't parse), then respond normally
+    # stale-failure: respond normally, then send a failure reason that isn't
+    #   the outcome of the announce (like aquatic does when an answer arrives
+    #   for an offer it no longer knows about)
+    # duplicate-response: respond to every announce twice
+    mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
+
     try:
         while True:
             message = await websocket.recv()
@@ -30,17 +52,41 @@ async def handle(websocket):
 
             request = json.loads(message)
 
-            # A negative min_interval is used by the timeout test to simulate
-            # a tracker that accepts the announce but never sends a response.
-            if int(sys.argv[2]) < 0:
+            if mode == 'silent':
+                continue
+            if mode == 'silent-first-connection' and connection_index == 1:
                 continue
 
+            info_hash = request["info_hash"]
+
+            if mode == 'failure':
+                await websocket.send(json.dumps({
+                    "action": "announce",
+                    "failure reason": "test failure",
+                    "info_hash": info_hash}))
+                continue
+
+            if mode == 'bare-failure':
+                await websocket.send(json.dumps({
+                    "failure reason": "invalid request"}))
+
             response = {}
-            response["info_hash"] = request["info_hash"]
+            response["action"] = "announce"
+            response["info_hash"] = info_hash
             response["interval"] = 120
             response["min_interval"] = 60
 
             await websocket.send(json.dumps(response))
+
+            if mode == 'duplicate-response':
+                await websocket.send(json.dumps(response))
+
+            if mode == 'stale-failure':
+                await websocket.send(json.dumps({
+                    "action": "announce",
+                    "failure reason": "Could not find the offer corresponding"
+                    " to your answer. It may have expired.",
+                    "info_hash": info_hash}))
 
     except Exception as e:
         print(e)

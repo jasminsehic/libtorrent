@@ -54,9 +54,17 @@ websocket_stream::websocket_stream(io_context& ios
 void websocket_stream::close()
 {
 	if (auto handler = std::exchange(m_connect_handler, nullptr))
+	{
 		post(m_io_service, std::bind(std::move(handler), error::operation_aborted));
 
+		// abort the connection attempt in progress (TCP connect, TLS or
+		// WebSocket handshake), rather than letting it run to completion
+		// (or hang, if the server never responds)
+		close_socket();
+	}
+
 	m_keepalive_timer.cancel();
+	m_awaiting_pong = false;
 
 	if (m_open)
 	{
@@ -136,9 +144,23 @@ void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 		, std::bind(&websocket_stream::on_resolve, shared_from_this(), _1, _2));
 }
 
+void websocket_stream::close_socket()
+{
+	error_code ignore;
+	std::visit(rtc::overloaded
+		{
+			[&](stream_type& stream) { stream.next_layer().close(ignore); }
+			, [&](ssl_stream_type& stream) { stream.next_layer().next_layer().close(ignore); }
+		}
+		, m_stream);
+}
+
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
 {
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
+
+	// the connection attempt was aborted by close()
+	if (!m_connect_handler) return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -176,6 +198,9 @@ void websocket_stream::do_tcp_connect(std::vector<tcp::endpoint> endpoints)
 void websocket_stream::on_tcp_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
+
+	// the connection attempt was aborted by close()
+	if (!m_connect_handler) return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -219,6 +244,9 @@ void websocket_stream::do_ssl_handshake()
 void websocket_stream::on_ssl_handshake(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_ssl_handshake");
+
+	// the connection attempt was aborted by close()
+	if (!m_connect_handler) return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -270,6 +298,23 @@ void websocket_stream::on_handshake(error_code const& ec)
 	}
 
 	m_open = true;
+	m_awaiting_pong = false;
+
+	// keep track of pongs, to detect a connection that silently went away
+	// (see on_keepalive()). Control frames are delivered while a read is
+	// outstanding
+	std::visit([&](auto& stream)
+		{
+			stream.control_callback([weak_self = std::weak_ptr<websocket_stream>(shared_from_this())]
+				(websocket::frame_type const kind, auto const&)
+				{
+					auto self = weak_self.lock();
+					if (self && kind == websocket::frame_type::pong)
+						self->m_awaiting_pong = false;
+				});
+		}
+		, m_stream);
+
 	arm_keepalive();
 
 	if (handler) post(m_io_service, std::bind(std::move(handler), ec));
@@ -281,6 +326,8 @@ void websocket_stream::on_read(error_code ec, std::size_t bytes_read, read_handl
 	COMPLETE_ASYNC("websocket_stream::on_read");
 
 	if (ec) m_open = false;
+	// anything received proves the connection is still alive
+	else m_awaiting_pong = false;
 
 	post(m_io_service, std::bind(std::move(handler), ec, bytes_read));
 }
@@ -302,6 +349,19 @@ void websocket_stream::on_close(error_code)
 void websocket_stream::on_keepalive(error_code ec)
 {
 	if (ec || !m_open) return;
+
+	if (m_awaiting_pong)
+	{
+		// nothing was received in a whole keepalive period since the last
+		// ping, not even its pong. The connection is most likely dead
+		// without having been closed (e.g. a NAT mapping expired, or the
+		// server went away), in which case nothing would ever be read
+		// from it again. Close the socket, making the outstanding read
+		// fail, so the owner learns about it and reconnects
+		close_socket();
+		return;
+	}
+	m_awaiting_pong = true;
 
 	ADD_OUTSTANDING_ASYNC("websocket_stream::on_ping");
 	std::visit([&](auto& stream)

@@ -179,6 +179,8 @@ private:
 	void on_keepalive(error_code ec);
 	void on_ping(error_code ec);
 	void arm_keepalive();
+	// closes the underlying TCP socket, aborting any outstanding operation
+	void close_socket();
 
 	io_context& m_io_service;
 	resolver_interface& m_resolver;
@@ -198,6 +200,10 @@ private:
 	connect_handler m_connect_handler;
 
 	bool m_open;
+
+	// a ping was sent and nothing (including its pong) has been received
+	// since
+	bool m_awaiting_pong = false;
 	deadline_timer m_keepalive_timer;
 };
 

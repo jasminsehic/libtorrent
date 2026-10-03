@@ -23,6 +23,7 @@ see LICENSE file.
 #include "libtorrent/error_code.hpp"
 #include "libtorrent/io_context.hpp"
 #include "libtorrent/peer_id.hpp"
+#include "libtorrent/time.hpp"
 #include "libtorrent/aux_/resolver_interface.hpp"
 #include "libtorrent/aux_/tracker_manager.hpp" // for tracker_connection
 #include "libtorrent/aux_/ssl.hpp"
@@ -85,6 +86,8 @@ private:
 	void on_connect(error_code const& ec);
 	void on_read(error_code ec, std::size_t bytes_read);
 	void on_write(error_code const& ec, std::size_t bytes_written);
+	// the time by which the tracker must have responded to req
+	time_point request_deadline(tracker_request const& req) const;
 	void update_announce_timer();
 	void on_announce_timeout(error_code const& ec);
 	// wraps tracker_connection::fail
@@ -102,7 +105,12 @@ private:
 	std::string m_write_data;
 
 	using tracker_message = std::variant<tracker_request, tracker_answer>;
-	std::deque<std::tuple<tracker_message, std::weak_ptr<request_callback>>> m_pending;
+	// messages not sent yet. For requests, the time_point is the deadline
+	// by which the tracker must have responded (see request_deadline()),
+	// which runs from the time the request is queued, so a request stuck
+	// behind a connection attempt or write that never completes still
+	// times out
+	std::deque<std::tuple<tracker_message, std::weak_ptr<request_callback>, time_point>> m_pending;
 
 	// pending is true from the point a request is sent until its first
 	// tracker_response is delivered. close() reports an error for any
@@ -117,6 +125,8 @@ private:
 		tracker_request req;
 		bool pending = true;
 		time_point deadline;
+		// when the request was sent
+		time_point sent;
 	};
 	// on_read() holds an iterator into m_callbacks across a reentrant call
 	// into cb->on_rtc_offer()/on_rtc_answer(), which may indirectly insert
@@ -129,6 +139,11 @@ private:
 
 	deadline_timer m_announce_timer;
 
+	// the last time anything was received on this connection (or when it
+	// was established). Used to tell a tracker that doesn't respond to a
+	// request apart from a connection that's dead
+	time_point m_last_receive = min_time();
+
 	bool m_sending = false;
 };
 
@@ -139,6 +154,9 @@ struct websocket_tracker_response {
 	std::optional<aux::rtc_answer> answer;
 	std::string failure_reason;
 };
+
+// builds the announce message sent to a WebSocket tracker for req
+TORRENT_EXTRA_EXPORT std::string websocket_tracker_announce_message(tracker_request const& req);
 
 TORRENT_EXTRA_EXPORT std::variant<websocket_tracker_response, std::string>
 	parse_websocket_tracker_response(span<char const> message, error_code &ec);
