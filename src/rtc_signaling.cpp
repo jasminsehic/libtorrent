@@ -32,8 +32,13 @@ see LICENSE file.
 #include <sstream>
 #include <mutex>
 
-// Enable this to pass libdatachannel log to the last created session
+// Enable this to pass libdatachannel log to the last created session, as
+// log_alerts (requires alert_category::session_log). This is very verbose.
+// It can also be enabled from the build, with -DDEBUG_RTC=1 (or the CMake
+// option webtorrent-debug-log=ON)
+#ifndef DEBUG_RTC
 #define DEBUG_RTC 0
+#endif
 
 namespace libtorrent {
 namespace aux {
