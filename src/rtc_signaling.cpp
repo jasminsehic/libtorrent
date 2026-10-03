@@ -375,7 +375,7 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 		config.iceServers.emplace_back(std::move(stun_server));
 
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
-	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler]
+	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id]
 		(rtc::PeerConnection::State state)
 	{
 		// Warning: this is called from another thread
@@ -391,51 +391,54 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 			error_code const ec = boost::asio::error::connection_refused;
 			auto& io_context = self->m_io_context;
 
-			if(pc_->gatheringState() != rtc::PeerConnection::GatheringState::Complete)
-				post(io_context, std::bind(std::move(handler), ec, ""));
-
 			post(io_context, std::bind(&rtc_signaling::on_data_channel
-				, std::move(self)
+				, self
 				, ec
-				, std::move(offer_id)
+				, offer_id
 				, nullptr
 			));
 		}
 	});
 
-	pc->onGatheringStateChange(
-		[weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), handler_ = std::move(handler)](
-			rtc::PeerConnection::GatheringState state) {
-			auto self = weak_this.lock();
-			auto pc_ = weak_pc.lock();
-			if (!self || !pc_)
-				return;
+pc->onGatheringStateChange(
+	[weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id](
+		rtc::PeerConnection::GatheringState state) {
+		auto self = weak_this.lock();
+		auto pc_ = weak_pc.lock();
+		if (!self || !pc_)
+			return;
 
-			auto& io_context = self->m_io_context;
+		auto& io_context = self->m_io_context;
 
 #ifndef TORRENT_DISABLE_LOGGING
-			post(io_context, [self, state]() {
-				self->debug_log("*** RTC signaling gathering state callback: %d"
-					, int(state));
+		post(io_context, [self, state]() {
+			self->debug_log("*** RTC signaling gathering state callback: %d"
+				, int(state));
+		});
+#endif
+
+		if (state == rtc::PeerConnection::GatheringState::Complete)
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			post(io_context, [self]() {
+				self->debug_log("*** RTC signaling gathering complete");
+			});
+
+			post(io_context, [self]() {
+				self->debug_log("*** RTC signaling posting generated offer");
 			});
 #endif
 
-			if (state == rtc::PeerConnection::GatheringState::Complete)
-			{
-#ifndef TORRENT_DISABLE_LOGGING
-				post(io_context, [self]() {
-					self->debug_log("*** RTC signaling gathering complete");
-				});
+			auto description = *pc_->localDescription();
 
-				post(io_context, [self]() {
-					self->debug_log("*** RTC signaling posting generated offer");
-				});
-#endif
-
-				auto description = *pc_->localDescription();
-				post(io_context, std::bind(std::move(handler_), error_code{}, description));
-			}
-		});
+			post(io_context, std::bind(
+				&rtc_signaling::on_description_generated,
+				self,
+				error_code{},
+				offer_id,
+				std::move(description)));
+		}
+	});
 
 	pc->onDataChannel([weak_this = weak_from_this(), offer_id]
 		(std::shared_ptr<rtc::DataChannel> dc)
@@ -457,6 +460,7 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	time_duration const timeout = seconds(std::max(connection_timeout, 1));
 	connection conn(m_io_context);
 	conn.peer_connection = std::move(pc);
+	conn.handler = std::move(handler);
 	conn.timer.expires_after(timeout);
 	conn.timer.async_wait([self = shared_from_this(), offer_id](error_code const& ec)
 	{
@@ -499,6 +503,25 @@ void rtc_signaling::report_offer(std::uint64_t const batch_id, error_code const&
 		, static_cast<unsigned long long>(batch_id), batch.generated(), batch.requested());
 #endif
 	batch.complete();
+}
+
+void rtc_signaling::on_description_generated(
+	error_code const& ec,
+	rtc_offer_id offer_id,
+	std::string description)
+{
+	auto it = m_connections.find(offer_id);
+	if (it == m_connections.end())
+		return;
+
+	if (ec)
+		on_description_generated(ec, offer_id, {});
+
+	auto handler = std::move(it->second.handler);
+	it->second.description_handler = {};
+
+	if (handler)
+		handler(ec, description);
 }
 
 void rtc_signaling::on_generated_offer(error_code const& ec, rtc_offer offer)

@@ -111,6 +111,8 @@ private:
 		std::optional<peer_id> pid;
 		bool incoming = false;
 
+		description_handler handler;
+
 		// for outgoing offers, the offer_batch this offer has not yet been
 		// reported to, or 0 once it has. Every outgoing offer must be
 		// reported to its batch exactly once (success or failure), or
@@ -129,6 +131,7 @@ private:
 	connection remove_connection(connection_map::iterator it);
 	void report_offer(std::uint64_t batch_id, error_code const& ec, rtc_offer offer);
 	void on_generated_offer(error_code const& ec, rtc_offer offer);
+	void on_description_generated(error_code const& ec, rtc_offer_id offer_id, std::string description);
 	void on_generated_answer(error_code const& ec, rtc_answer answer, rtc_offer offer);
 	void on_data_channel(error_code const& ec, rtc_offer_id offer_id, std::shared_ptr<rtc::DataChannel> dc);
 
