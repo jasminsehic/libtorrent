@@ -1137,7 +1137,9 @@ TORRENT_TEST(websocket_tracker_bare_failure_keeps_connection)
 		add_websocket_tracker_torrent(s, "tmp7_tracker", websocket_tracker_url(port));
 
 		auto const counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 1);
+		// add_websocket_tracker_torrent() creates a hybrid v1/v2 torrent, so the single torrent
+		// generates two announces and therefore two successful tracker replies.
+		TEST_EQUAL(counts.replies, 2);
 		TEST_EQUAL(counts.errors, 0);
 	}
 	stop_websocket_server();
@@ -1153,7 +1155,9 @@ TORRENT_TEST(websocket_tracker_stale_failure_ignored)
 		add_websocket_tracker_torrent(s, "tmp8_tracker", websocket_tracker_url(port));
 
 		auto const counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 1);
+		// add_websocket_tracker_torrent() creates a hybrid v1/v2 torrent, so the single torrent
+		// generates two announces and therefore two successful tracker replies.
+		TEST_EQUAL(counts.replies, 2);
 		TEST_EQUAL(counts.errors, 0);
 	}
 	stop_websocket_server();
@@ -1170,7 +1174,9 @@ TORRENT_TEST(websocket_tracker_duplicate_response_ignored)
 		add_websocket_tracker_torrent(s, "tmp9_tracker", websocket_tracker_url(port));
 
 		auto const counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 1);
+		// add_websocket_tracker_torrent() creates a hybrid v1/v2 torrent, so the single torrent
+		// generates two announces and therefore two successful tracker replies.
+		TEST_EQUAL(counts.replies, 2);
 		TEST_EQUAL(counts.errors, 0);
 	}
 	stop_websocket_server();
@@ -1200,7 +1206,9 @@ TORRENT_TEST(websocket_tracker_dead_connection_replaced)
 		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
 
 		counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 1);
+		// add_websocket_tracker_torrent() creates a hybrid v1/v2 torrent, so the single torrent
+		// generates two announces and therefore two successful tracker replies.
+		TEST_EQUAL(counts.replies, 2);
 		TEST_EQUAL(counts.errors, 0);
 	}
 	stop_websocket_server();

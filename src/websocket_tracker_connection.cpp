@@ -383,12 +383,30 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 	}
 #endif
 
-	// close a dead connection first, so that requests issued in response
-	// to the errors reported below are sent on a new connection instead of
-	// being queued on this one. close() reports any other request still
-	// outstanding on this connection
+	// if the connection itself is dead, all outstanding announces on it
+	// have failed. Remove them before closing so close() does not report
+	// them using the underlying socket error. They are reported below as
+	// tracker timeouts with a consistent error and message.
 	if (connection_dead)
-		close(error::timed_out, operation_t::timer);
+	{
+		for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
+		{
+			if (!it->second.pending)
+			{
+				++it;
+				continue;
+			}
+
+			timed_out.emplace_back(it->second.cb, it->second.req);
+			m_offer_quota.erase(it->first);
+			it = m_callbacks.erase(it);
+		}
+
+		// close() now has no pending announce callbacks to report. Its
+		// purpose here is to tear down the dead connection and remove it
+		// from tracker_manager so subsequent announces establish a new one.
+		close(error::operation_aborted, operation_t::unknown);
+	}
 
 	for (auto const& [cb, req] : timed_out)
 	{
