@@ -70,17 +70,18 @@ void report_error(std::weak_ptr<request_callback> const& cb,
 }
 }
 
-websocket_tracker_connection::websocket_tracker_connection(
-	io_context& ios,
+websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
 	tracker_manager& man,
 	tracker_request const& req,
-	std::weak_ptr<request_callback> cb
-)
+	std::weak_ptr<request_callback> cb)
 	: tracker_connection(man, req, ios, cb)
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)
+	, m_announce_timer(ios)
 {
-	queue_request(req, std::move(cb));
+	// not queue_request(): arming the announce timer requires
+	// shared_from_this(), which isn't available yet. start() arms it
+	m_pending.emplace_back(tracker_message{req}, std::move(cb), request_deadline(req));
 }
 
 void websocket_tracker_connection::start()
@@ -107,6 +108,9 @@ void websocket_tracker_connection::start()
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
 	m_websocket->async_connect(req.url, std::bind(&websocket_tracker_connection::on_connect
 			, shared_from_this(), _1));
+
+	// the requests' deadlines also cover establishing the connection
+	update_announce_timer();
 }
 
 void websocket_tracker_connection::close()
@@ -117,6 +121,8 @@ void websocket_tracker_connection::close()
 
 void websocket_tracker_connection::close(error_code const& ec, operation_t const op)
 {
+	m_announce_timer.cancel();
+
 	if (m_websocket)
 	{
 		m_websocket->close();
@@ -125,7 +131,8 @@ void websocket_tracker_connection::close(error_code const& ec, operation_t const
 
 	while (!m_pending.empty())
 	{
-		auto [msg, callback] = std::move(m_pending.front());
+		auto [msg, callback, deadline] = std::move(m_pending.front());
+		TORRENT_UNUSED(deadline);
 		m_pending.pop_front();
 		if (callback.lock())
 		{
@@ -209,19 +216,68 @@ bool websocket_tracker_connection::prune_non_stopped_requests()
 		it = m_callbacks.erase(it);
 	}
 
+	update_announce_timer();
+
 	return has_stopped;
 }
 
 void websocket_tracker_connection::queue_request(tracker_request req, std::weak_ptr<request_callback> cb)
 {
-	m_pending.emplace_back(tracker_message{std::move(req)}, cb);
+	time_point const deadline = request_deadline(req);
+	m_pending.emplace_back(tracker_message{std::move(req)}, cb, deadline);
+
+	// the deadline applies while the request is still queued too, e.g. if
+	// the connection is never established
+	update_announce_timer();
+
 	if (is_open()) send_pending();
 }
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
+	m_pending.emplace_back(
+		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{}, max_time());
 	if (is_open()) send_pending();
+}
+
+time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
+{
+	auto const& settings = m_man.settings();
+	int const timeout = req.event == event_t::stopped
+		? settings.get_int(settings_pack::stop_tracker_timeout)
+		: settings.get_int(settings_pack::tracker_completion_timeout);
+
+	// a timeout of 0 (or less) disables it
+	if (timeout <= 0)
+		return max_time();
+	return clock_type::now() + seconds(timeout);
+}
+
+void websocket_tracker_connection::update_announce_timer()
+{
+	m_announce_timer.cancel();
+
+	time_point earliest = max_time();
+
+	for (auto const& [info_hash, entry] : m_callbacks)
+	{
+		if (entry.pending)
+			earliest = std::min(earliest, entry.deadline);
+	}
+
+	for (auto const& item : m_pending)
+	{
+		if (std::holds_alternative<tracker_request>(std::get<0>(item)))
+			earliest = std::min(earliest, std::get<2>(item));
+	}
+
+	if (earliest == max_time())
+		return;
+
+	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	m_announce_timer.expires_at(earliest);
+	m_announce_timer.async_wait(
+		std::bind(&websocket_tracker_connection::on_announce_timeout, shared_from_this(), _1));
 }
 
 void websocket_tracker_connection::send_pending()
@@ -230,11 +286,11 @@ void websocket_tracker_connection::send_pending()
 
 	m_sending = true;
 
-	auto [msg, callback] = std::move(m_pending.front());
+	auto [msg, callback, deadline] = std::move(m_pending.front());
 	m_pending.pop_front();
 
 	std::visit(
-		[this, cb = callback](auto const& m) {
+		[this, cb = callback, deadline_copy = deadline](auto const& m) {
 			// record every sent request, even ones whose callback has
 			// already expired, so m_callbacks always reflects whether the
 			// connection's current request is still pending (used by
@@ -249,15 +305,129 @@ void websocket_tracker_connection::send_pending()
 				auto const existing = m_callbacks.find(m.info_hash);
 				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
 #endif
-				m_callbacks[m.info_hash] = callback_entry{cb, m};
+				// the deadline was set when the request was queued
+				m_callbacks[m.info_hash] =
+					callback_entry{cb, m, true, deadline_copy, clock_type::now()};
 			}
 
 			if (cb.lock())
 				m_requester = cb;
 
+			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
+				m_sending_request = m.info_hash;
+			else
+				m_sending_request.reset();
+
 			do_send(m);
+
+			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
+				update_announce_timer();
 		},
 		msg);
+}
+
+
+void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
+{
+	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
+
+	if (ec == boost::asio::error::operation_aborted)
+		return;
+
+	auto const now = clock_type::now();
+	std::vector<std::pair<std::weak_ptr<request_callback>, tracker_request>> timed_out;
+
+	// set if the timeouts suggest the connection itself is dead, rather
+	// than the tracker not responding to some request (e.g. aquatic
+	// silently drops announces in some cases)
+	bool connection_dead = false;
+
+	for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
+	{
+		if (!it->second.pending || it->second.deadline > now)
+		{
+			++it;
+			continue;
+		}
+
+		// The connection is dead if this request's WebSocket write is still
+		// outstanding, or if nothing at all was received since the request was sent.
+		// In the former case, incoming traffic from other torrents must not make a
+		// stalled write look healthy.
+		if ((m_sending_request && *m_sending_request == it->first)
+			|| m_last_receive <= it->second.sent)
+		{
+			connection_dead = true;
+		}
+
+		timed_out.emplace_back(it->second.cb, it->second.req);
+		m_offer_quota.erase(it->first);
+		it = m_callbacks.erase(it);
+	}
+
+	// requests that couldn't even be sent before their deadline. The
+	// connection is stuck connecting, or writing
+	auto const pending_end =
+		std::remove_if(m_pending.begin(), m_pending.end(), [&](auto const& item) {
+			auto const* req = std::get_if<tracker_request>(&std::get<0>(item));
+			if (!req || std::get<2>(item) > now)
+				return false;
+
+			connection_dead = true;
+			timed_out.emplace_back(std::get<1>(item), *req);
+			return true;
+		});
+	m_pending.erase(pending_end, m_pending.end());
+
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+	{
+		cb->debug_log("*** WEBSOCKET_TRACKER_TIMEOUT [ url: %s timed-out: %d connection-dead: %d ]",
+			tracker_req().url.c_str(),
+			int(timed_out.size()),
+			int(connection_dead));
+	}
+#endif
+
+	// if the connection itself is dead, all outstanding announces on it
+	// have failed. Remove them before closing so close() does not report
+	// them using the underlying socket error. They are reported below as
+	// tracker timeouts with a consistent error and message.
+	if (connection_dead)
+	{
+		for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
+		{
+			if (!it->second.pending)
+			{
+				++it;
+				continue;
+			}
+
+			timed_out.emplace_back(it->second.cb, it->second.req);
+			m_offer_quota.erase(it->first);
+			it = m_callbacks.erase(it);
+		}
+
+		// close() now has no pending announce callbacks to report. Its
+		// purpose here is to tear down the dead connection and remove it
+		// from tracker_manager so subsequent announces establish a new one.
+		close(error::operation_aborted, operation_t::unknown);
+	}
+
+	for (auto const& [cb, req] : timed_out)
+	{
+		if (auto c = cb.lock())
+		{
+			c->tracker_request_error(req,
+				errors::timed_out,
+				operation_t::timer,
+				"tracker announce timed out",
+				seconds32{120});
+		}
+	}
+
+	if (!connection_dead)
+		update_announce_timer();
 }
 
 void websocket_tracker_connection::do_send(tracker_request const& req)
@@ -380,6 +550,7 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 		return;
 	}
 
+	m_last_receive = clock_type::now();
 	send_pending();
 	do_read();
 }
@@ -429,6 +600,9 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		return;
 	}
 
+	// only consider well formed responses as received
+	m_last_receive = clock_type::now();
+
 	TORRENT_ASSERT(std::holds_alternative<websocket_tracker_response>(ret));
 	auto response = std::move(std::get<websocket_tracker_response>(ret));
 
@@ -453,6 +627,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 					operation_t::bittorrent,
 					response.failure_reason,
 					seconds32{120});
+
+				update_announce_timer();
 			}
 #ifndef TORRENT_DISABLE_LOGGING
 			else if (auto cb_ = requester())
@@ -515,6 +691,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 				cit->second.pending = false;
 
 				cb->tracker_response(cit->second.req, {}, {}, *response.resp);
+
+				update_announce_timer();
 			}
 		}
 	}
@@ -535,6 +713,7 @@ void websocket_tracker_connection::on_write(error_code const& ec, std::size_t /*
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_write");
 	m_write_data.clear();
+	m_sending_request.reset();
 	m_sending = false;
 	if (ec)
 	{
