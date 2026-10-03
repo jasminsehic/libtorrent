@@ -3824,13 +3824,33 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 		// TODO: move this into a function on tracker_list
 		aux::announce_entry* ae = m_trackers.find_tracker(r.url);
 
+#ifndef TORRENT_DISABLE_LOGGING
+		debug_log("*** tracker response lookup [ url: %s endpoint: %s found_tracker: %d version: %d ]"
+			, r.url.c_str()
+			, print_endpoint(r.outgoing_socket.get_local_endpoint()).c_str()
+			, ae != nullptr
+			, int(v));
+#endif
+
 		tcp::endpoint local_endpoint;
 		if (ae)
 		{
 			auto* aep = ae->find_endpoint(r.outgoing_socket);
+
+#ifndef TORRENT_DISABLE_LOGGING
+			debug_log("*** tracker response endpoint [ url: %s found_endpoint: %d ]"
+				, r.url.c_str()
+				, aep != nullptr);
+#endif
+
 			if (aep)
 			{
 				auto& a = aep->info_hashes[v];
+
+#ifndef TORRENT_DISABLE_LOGGING
+				debug_log("*** tracker response state before [ updating: %d ]"
+					, a.updating);
+#endif
 
 				local_endpoint = aep->local_endpoint;
 				if (resp.incomplete >= 0) a.scrape_incomplete = resp.incomplete;
@@ -3849,7 +3869,19 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 				ae->verified = true;
 				a.next_announce = now + resp.interval;
 				a.min_announce = now + resp.min_interval;
+
+#ifndef TORRENT_DISABLE_LOGGING
+				debug_log("*** tracker response state clearing updating [ before: %d ]"
+					, a.updating);
+#endif
+
 				a.updating = false;
+
+#ifndef TORRENT_DISABLE_LOGGING
+				debug_log("*** tracker response state clearing updating [ after: %d ]"
+					, a.updating);
+#endif
+
 				a.fails = 0;
 				a.last_error.clear();
 				a.message = !resp.warning_message.empty() ? resp.warning_message : std::string();

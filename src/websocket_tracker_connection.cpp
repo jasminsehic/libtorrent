@@ -327,7 +327,6 @@ void websocket_tracker_connection::send_pending()
 		msg);
 }
 
-
 void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
@@ -336,6 +335,7 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 		return;
 
 	auto const now = clock_type::now();
+
 	std::vector<std::pair<std::weak_ptr<request_callback>, tracker_request>> timed_out;
 
 	// set if the timeouts suggest the connection itself is dead, rather

@@ -341,10 +341,25 @@ namespace libtorrent::aux {
 					, "", seconds32(0)));
 				return;
 			}
+#ifndef TORRENT_DISABLE_LOGGING
+			// the announce is only sent once its offers have been generated.
+			// Log both ends, to make an announce stuck waiting on its offers
+			// visible
+			cb->debug_log("*** WEBSOCKET_TRACKER_GENERATING_OFFERS [ url: %s num_want: %d ]"
+				, req.url.c_str(), req.num_want);
+#endif
 			cb->generate_rtc_offers(req.num_want
 				, [this, &ios, request = std::move(req), c](error_code const& ec
 					, std::vector<aux::rtc_offer> offers) mutable
 			{
+#ifndef TORRENT_DISABLE_LOGGING
+				if (auto rc = c.lock())
+				{
+					rc->debug_log("*** WEBSOCKET_TRACKER_OFFERS_GENERATED [ url: %s offers: %d num_want: %d error: %s ]"
+						, request.url.c_str(), int(offers.size()), request.num_want
+						, ec ? ec.message().c_str() : "none");
+				}
+#endif
 				if (!ec) request.offers = std::move(offers);
 
 				// m_abort may have been set (session shutdown) while this
