@@ -39,6 +39,7 @@ see LICENSE file.
 
 #include <cstdio>
 #include <cstdarg>
+#include <string>
 
 using namespace std::placeholders;
 using namespace std::chrono_literals;
@@ -529,6 +530,308 @@ void test_websocket_pong_timeout()
 
 	stream->close();
 }
+
+// a local UDP socket that never responds, used as a STUN server. It keeps
+// ICE gathering pending (libjuice only gives up on an unresponsive STUN
+// server after ~23 seconds), so an offer can be made to time out before it
+// has been generated. A bound socket is used rather than an unused port so
+// that no ICMP port unreachable can make libjuice fail the request early
+struct unresponsive_stun_server
+{
+	unresponsive_stun_server()
+		: sock(io_context,
+			  boost::asio::ip::udp::endpoint(boost::asio::ip::make_address("127.0.0.1"), 0))
+	{}
+	std::string address() const
+	{
+		return "127.0.0.1:" + std::to_string(sock.local_endpoint().port());
+	}
+	boost::asio::ip::udp::socket sock;
+};
+
+// regression test for https://github.com/arvidn/libtorrent/issues/7281
+// when an offer timed out before ICE gathering completed, its connection was
+// removed without ever reporting the offer to its batch. The batch never
+// completed, so the announce waiting on it was never sent and the tracker
+// was stuck "updating" forever
+void test_offer_timeout()
+{
+	time_point const start_time = clock_type::now();
+
+	unresponsive_stun_server stun;
+	session_mock ses(io_context);
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server, stun.address());
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 1);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+
+	int calls = 0;
+	auto offers_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		std::cout << "Batch completed with " << int(offers.size())
+				  << " offers, ec: " << ec.message() << std::endl;
+		TEST_EQUAL(ec, error_code(boost::asio::error::timed_out));
+		TEST_CHECK(offers.empty());
+		success = true;
+	};
+
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {});
+	sig->generate_offers(3, offers_handler);
+
+	run_test();
+	TEST_EQUAL(calls, 1);
+
+	ses.print_alerts(start_time);
+	sig->close();
+}
+
+// regression test for https://github.com/arvidn/libtorrent/issues/7281
+// generated offers used to be added to whichever batch was at the front of
+// the queue. A batch with an offer that never completed would then take
+// offers from the next batch, which would in turn stall waiting for them,
+// leaving a deficit that carried over to every subsequent batch
+void test_offer_batches_are_independent()
+{
+	time_point const start_time = clock_type::now();
+
+	unresponsive_stun_server stun;
+	session_mock ses(io_context);
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 3);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+
+	bool slow_done = false;
+	bool fast_done = false;
+
+	auto slow_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		std::cout << "Slow batch completed with " << int(offers.size())
+				  << " offers, ec: " << ec.message() << std::endl;
+		TEST_CHECK(!slow_done);
+		// these offers can't be generated before they time out, and must not
+		// have been given offers belonging to the other batch
+		TEST_EQUAL(ec, error_code(boost::asio::error::timed_out));
+		TEST_CHECK(offers.empty());
+		slow_done = true;
+		if (fast_done)
+			success = true;
+	};
+
+	auto fast_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		std::cout << "Fast batch completed with " << int(offers.size())
+				  << " offers, ec: " << ec.message() << std::endl;
+		TEST_CHECK(!fast_done);
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 2);
+		// must not have to wait for the slow batch
+		TEST_CHECK(!slow_done);
+		fast_done = true;
+		if (slow_done)
+			success = true;
+	};
+
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {});
+
+	// the STUN server is read when each connection is created, so this
+	// makes only the first batch's offers stall
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server, stun.address());
+	sig->generate_offers(2, slow_handler);
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server, "");
+	sig->generate_offers(2, fast_handler);
+
+	run_test();
+	TEST_CHECK(slow_done);
+	TEST_CHECK(fast_done);
+
+	ses.print_alerts(start_time);
+	sig->close();
+}
+
+
+// regression test for https://github.com/arvidn/libtorrent/issues/7281
+// when libdatachannel can't create the ICE agent's UDP socket (e.g. the
+// process ran out of file descriptors), createDataChannel() throws. That
+// exception used to escape generate_offers(), leaving its batch waiting for
+// offers that were never going to be created, stalling the announce
+void test_offer_creation_failure()
+{
+	time_point const start_time = clock_type::now();
+
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+
+	int calls = 0;
+	error_code result;
+	int num_offers = -1;
+
+	auto offers_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		result = ec;
+		num_offers = int(offers.size());
+		success = true;
+	};
+
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[]() { throw std::runtime_error("test offer creation failure"); });
+
+	bool threw = false;
+	try
+	{
+		sig->generate_offers(1, offers_handler);
+	}
+	catch (std::exception const& e)
+	{
+		threw = true;
+		std::cout << "generate_offers() threw: " << e.what() << std::endl;
+	}
+
+	TEST_CHECK(!threw);
+
+	run_test();
+
+	TEST_EQUAL(calls, 1);
+	TEST_EQUAL(result,
+		boost::system::errc::make_error_code(boost::system::errc::resource_unavailable_try_again));
+	TEST_EQUAL(num_offers, 0);
+
+	ses.print_alerts(start_time);
+	sig->close();
+}
+
+// when only some of a batch's offers fail to be created, the batch must still
+// complete, delivering the offers that succeeded without an error. The
+// failure happens after the connection was created, which is where
+// libdatachannel throws when it can't open a UDP socket
+void test_offer_creation_partial_failure()
+{
+	time_point const start_time = clock_type::now();
+
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+
+	int calls = 0;
+	error_code result;
+	int num_offers = -1;
+
+	auto offers_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		result = ec;
+		num_offers = int(offers.size());
+		success = true;
+	};
+
+	int hook_calls = 0;
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[&]() {
+			if (++hook_calls == 2)
+				throw std::runtime_error("test offer creation failure");
+		});
+
+	bool threw = false;
+	try
+	{
+		sig->generate_offers(3, offers_handler);
+	}
+	catch (std::exception const& e)
+	{
+		threw = true;
+		std::cout << "generate_offers() threw: " << e.what() << std::endl;
+	}
+
+	TEST_CHECK(!threw);
+	TEST_EQUAL(hook_calls, 3);
+
+	run_test();
+
+	TEST_EQUAL(calls, 1);
+	TEST_EQUAL(result, error_code{});
+	TEST_EQUAL(num_offers, 2);
+
+	ses.print_alerts(start_time);
+	sig->close();
+}
+
+
+void test_offer_partial_failure_batches_are_independent()
+{
+	time_point const start_time = clock_type::now();
+
+	unresponsive_stun_server stun;
+	session_mock ses(io_context);
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server, stun.address());
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 3);
+
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+
+	int hook_calls = 0;
+	bool batch1_done = false;
+	bool batch2_done = false;
+	bool batch2_completed_first = false;
+
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[&]() {
+			++hook_calls;
+
+			// The first offer uses the unresponsive STUN server and stalls.
+			// Switch to normal operation for subsequent offers.
+			if (hook_calls == 1)
+			{
+				ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server, "");
+			}
+			// The second offer fails to be created.
+			else if (hook_calls == 2)
+			{
+				throw std::runtime_error("test offer creation failure");
+			}
+		});
+
+	sig->generate_offers(3, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		batch1_done = true;
+		if (batch2_done)
+			success = true;
+
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+	});
+
+	// This batch is entirely independent and should complete while the first
+	// batch is still waiting for its stalled offer to time out.
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		batch2_done = true;
+		batch2_completed_first = !batch1_done;
+		if (batch1_done)
+			success = true;
+
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+	});
+
+	run_test();
+
+	TEST_EQUAL(hook_calls, 4);
+	TEST_CHECK(batch1_done);
+	TEST_CHECK(batch2_done);
+	TEST_CHECK(batch2_completed_first);
+
+	ses.print_alerts(start_time);
+	sig->close();
+}
 } // namespace
 
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
@@ -537,6 +840,15 @@ TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }
 TORRENT_TEST(write_exact_chunk_boundary) { test_write_exact_chunk_boundary(); }
 TORRENT_TEST(websocket_pong_timeout) { test_websocket_pong_timeout(); }
+
+TORRENT_TEST(signaling_offer_timeout) { test_offer_timeout(); }
+TORRENT_TEST(signaling_offer_batches_are_independent) { test_offer_batches_are_independent(); }
+TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
+TORRENT_TEST(signaling_offer_creation_partial_failure) { test_offer_creation_partial_failure(); }
+TORRENT_TEST(signaling_offer_partial_failure_batches_are_independent)
+{
+	test_offer_partial_failure_batches_are_independent();
+}
 #else
 TORRENT_TEST(disabled) {}
 #endif // TORRENT_USE_RTC
