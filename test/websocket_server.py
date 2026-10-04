@@ -40,7 +40,24 @@ async def handle(websocket):
     #   the outcome of the announce (like aquatic does when an answer arrives
     #   for an offer it no longer knows about)
     # duplicate-response: respond to every announce twice
+    # paused-failure: reject paused announces, respond normally to others
+    # paused-close: close the connection when receiving a paused announce
+    # paused-required: reject announces that don't contain event=paused
+    # paused-bare-failure: like aquatic, respond to paused announces with a
+    #   failure reason without an info_hash, keeping the connection open.
+    #   Respond normally to others
+    # paused-silent-busy: never respond to paused announces, but keep the
+    #   connection busy by sending the last response to another torrent's
+    #   announce again. Respond normally to others
+    # paused-required-silent-first-connection: never respond on the first
+    #   connection, behave like paused-required on any later connection
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
+
+    if mode == 'paused-required-silent-first-connection':
+        mode = 'silent' if connection_index == 1 else 'paused-required'
+
+    # the last announce response sent on this connection
+    last_response = None
 
     try:
         while True:
@@ -65,6 +82,34 @@ async def handle(websocket):
 
             info_hash = request["info_hash"]
 
+            if mode == 'paused-bare-failure' and request.get("event") == "paused":
+                await websocket.send(json.dumps({
+                    "failure reason": "Invalid request"}))
+                continue
+
+            if mode == 'paused-silent-busy' and request.get("event") == "paused":
+                if last_response is not None:
+                    await websocket.send(json.dumps(last_response))
+                continue
+
+            if mode == 'paused-close' and request.get("event") == "paused":
+                await websocket.close()
+                return
+
+            if mode == 'paused-failure' and request.get("event") == "paused":
+                await websocket.send(json.dumps({
+                    "action": "announce",
+                    "failure reason": "paused event not supported",
+                    "info_hash": info_hash}))
+                continue
+
+            if mode == 'paused-required' and request.get("event") != "paused":
+                await websocket.send(json.dumps({
+                    "action": "announce",
+                    "failure reason": "expected paused event",
+                    "info_hash": info_hash}))
+                continue
+
             if mode == 'failure':
                 await websocket.send(json.dumps({
                     "action": "announce",
@@ -83,6 +128,7 @@ async def handle(websocket):
             response["min_interval"] = 60
 
             await websocket.send(json.dumps(response))
+            last_response = response
 
             if mode == 'duplicate-response':
                 await websocket.send(json.dumps(response))

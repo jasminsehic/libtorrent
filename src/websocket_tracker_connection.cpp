@@ -691,6 +691,14 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 					seconds32{
 						m_man.settings().get_int(settings_pack::min_websocket_announce_interval)});
 
+				if (cit->second.req.event == event_t::paused
+				        && m_man.get_websocket_paused_support(cit->second.req.url)
+				                != tracker_manager::paused_event_support::unsupported)
+				{
+				        m_man.set_websocket_paused_support(
+				                cit->second.req.url, tracker_manager::paused_event_support::supported);
+				}
+
 				// this request's outcome has just been reported to its
 				// requester; mark it so close() won't also report an error
 				// for it.

@@ -464,27 +464,31 @@ struct silent_pong_server
 	}
 
 private:
+	// the handlers may run after this object is destroyed, since the
+	// io_context outlives each test. Only the accept handler touches this,
+	// and not when the accept was aborted by destroying the acceptor
 	void accept_next()
 	{
 		acceptor.async_accept([this](error_code const& ec, boost::asio::ip::tcp::socket sock) {
+			if (ec == boost::asio::error::operation_aborted)
+				return;
+
 			if (!ec)
 			{
 				auto ws = std::make_shared<websocket_type>(std::move(sock));
-				ws->async_accept([this, ws](error_code const& ec) {
-					if (!ec)
-						connections.push_back(ws);
-					accept_next();
+				ws->async_accept([conns = connections, ws](error_code const& accept_ec) {
+					if (!accept_ec)
+						conns->push_back(ws);
 				});
 			}
-			else
-			{
-				accept_next();
-			}
+			accept_next();
 		});
 	}
 
 	boost::asio::ip::tcp::acceptor acceptor;
-	std::vector<std::shared_ptr<websocket_type>> connections;
+	// keeps the connections open (and never read from)
+	std::shared_ptr<std::vector<std::shared_ptr<websocket_type>>> connections =
+		std::make_shared<std::vector<std::shared_ptr<websocket_type>>>();
 };
 
 // regression test: a WebSocket connection that stops responding to pings
@@ -514,9 +518,9 @@ void test_websocket_pong_timeout()
 			return;
 		}
 
-		stream->async_read(buffer, [&](error_code const& ec, std::size_t) {
+		stream->async_read(buffer, [&](error_code const& read_ec, std::size_t) {
 			read_called = true;
-			read_error = ec;
+			read_error = read_ec;
 			success = true;
 		});
 	});
@@ -549,6 +553,120 @@ struct unresponsive_stun_server
 	boost::asio::ip::udp::socket sock;
 };
 
+
+// WebSocket server that keeps reading from its connections, so client ping
+// frames receive automatic pong responses. Counterpart of silent_pong_server
+struct responsive_pong_server
+{
+	using websocket_type = boost::beast::websocket::stream<boost::asio::ip::tcp::socket>;
+
+	responsive_pong_server()
+		: acceptor(io_context,
+			  boost::asio::ip::tcp::endpoint(boost::asio::ip::make_address_v4("127.0.0.1"), 0))
+	{
+		accept_next();
+	}
+
+	std::string address() const
+	{
+		return "127.0.0.1:" + std::to_string(acceptor.local_endpoint().port());
+	}
+
+private:
+	// see silent_pong_server::accept_next()
+	void accept_next()
+	{
+		acceptor.async_accept([this](error_code const& ec, boost::asio::ip::tcp::socket sock) {
+			if (ec == boost::asio::error::operation_aborted)
+				return;
+
+			if (!ec)
+			{
+				auto ws = std::make_shared<websocket_type>(std::move(sock));
+				ws->async_accept([ws](error_code const& accept_ec) {
+					if (!accept_ec)
+						read_next(ws);
+				});
+			}
+			accept_next();
+		});
+	}
+
+	// pings are only answered while a read is outstanding. The pending read
+	// keeps the connection alive until the client closes it
+	static void read_next(std::shared_ptr<websocket_type> ws)
+	{
+		auto buffer = std::make_shared<boost::beast::flat_buffer>();
+		ws->async_read(*buffer, [ws, buffer](error_code const& ec, std::size_t) {
+			if (!ec)
+				read_next(ws);
+		});
+	}
+
+	boost::asio::ip::tcp::acceptor acceptor;
+};
+
+// runs the shared io_context for d, regardless of success
+void run_for(lt::time_duration const d)
+{
+	auto const end_time = clock_type::now() + d;
+	while (clock_type::now() < end_time)
+	{
+		if (io_context.stopped())
+			io_context.restart();
+		io_context.run_one_until(end_time);
+	}
+}
+
+// negative control for test_websocket_pong_timeout(): a connection whose
+// peer answers pings must stay open, however long it's idle. Otherwise
+// dead connection detection would close every idle connection after a
+// keepalive period or two
+void test_websocket_pong_keeps_connection()
+{
+	session_mock ses(io_context);
+	responsive_pong_server server;
+
+	seconds const keepalive_period(1);
+	auto stream = std::make_shared<aux::websocket_stream>(
+		io_context, ses.get_resolver(), nullptr, keepalive_period);
+
+	bool connect_called = false;
+	error_code connect_error;
+
+	boost::beast::flat_buffer buffer;
+	bool read_called = false;
+	error_code read_error;
+
+	stream->async_connect("ws://" + server.address() + "/", [&](error_code const& ec) {
+		connect_called = true;
+		connect_error = ec;
+		if (ec)
+			return;
+
+		// nothing is ever sent by the server, so this only completes when
+		// the connection is closed
+		stream->async_read(buffer, [&](error_code const& read_ec, std::size_t) {
+			read_called = true;
+			read_error = read_ec;
+			success = true;
+		});
+	});
+
+	// several keepalive periods: a ping is sent each period, and each one is
+	// answered with a pong before the next period ends
+	run_for(keepalive_period * 5);
+
+	TEST_CHECK(connect_called);
+	TEST_CHECK(!connect_error);
+	TEST_CHECK(!read_called);
+	TEST_CHECK(stream->is_open());
+
+	// closing it is what completes the read
+	stream->close();
+	run_test();
+	TEST_CHECK(read_called);
+}
 // regression test for https://github.com/arvidn/libtorrent/issues/7281
 // when an offer timed out before ICE gathering completed, its connection was
 // removed without ever reporting the offer to its batch. The batch never
@@ -840,6 +958,7 @@ TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }
 TORRENT_TEST(write_exact_chunk_boundary) { test_write_exact_chunk_boundary(); }
 TORRENT_TEST(websocket_pong_timeout) { test_websocket_pong_timeout(); }
+TORRENT_TEST(websocket_pong_keeps_connection) { test_websocket_pong_keeps_connection(); }
 
 TORRENT_TEST(signaling_offer_timeout) { test_offer_timeout(); }
 TORRENT_TEST(signaling_offer_batches_are_independent) { test_offer_batches_are_independent(); }
