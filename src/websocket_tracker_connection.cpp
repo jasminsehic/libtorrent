@@ -543,8 +543,6 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		return;
 	}
 
-	m_last_receive = clock_type::now();
-
 	auto const& buf = m_read_buffer.data();
 
 #ifndef TORRENT_DISABLE_LOGGING
@@ -572,6 +570,9 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		do_read();
 		return;
 	}
+
+	// only consider well formed responses as received
+	m_last_receive = clock_type::now();
 
 	TORRENT_ASSERT(std::holds_alternative<websocket_tracker_response>(ret));
 	auto response = std::move(std::get<websocket_tracker_response>(ret));
