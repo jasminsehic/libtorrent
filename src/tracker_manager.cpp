@@ -22,6 +22,7 @@ see LICENSE file.
 #include "libtorrent/aux_/socket_io.hpp"
 #include "libtorrent/aux_/ssl.hpp"
 #include "libtorrent/aux_/tracker_manager.hpp"
+#include "libtorrent/hex.hpp"
 #include "libtorrent/aux_/udp_tracker_connection.hpp"
 
 #if TORRENT_USE_RTC
@@ -269,9 +270,13 @@ bool is_tracker_protocol_supported(string_view const url)
 	void tracker_manager::remove_request(aux::websocket_tracker_connection const* c)
 	{
 		TORRENT_ASSERT(is_single_thread());
-		tracker_request const& req = c->tracker_req();
-		auto const it = m_websocket_conns.find(req.url);
-		if (it != m_websocket_conns.end() && it->second.get() == c)
+		// looked up by the connection itself rather than by its key: the key
+		// depends on what's been learned about the tracker, which may have
+		// changed since the connection was added
+		auto const it = std::find_if(m_websocket_conns.begin(),
+			m_websocket_conns.end(),
+			[c](auto const& e) { return e.second.get() == c; });
+		if (it != m_websocket_conns.end())
 			m_websocket_conns.erase(it);
 	}
 #endif
@@ -359,42 +364,46 @@ bool is_tracker_protocol_supported(string_view const url)
 					, "", seconds32(0)));
 				return;
 			}
-			cb->generate_rtc_offers(req.num_want
-				, [this, &ios, request = std::move(req), c](error_code const& ec
-					, std::vector<aux::rtc_offer> offers) mutable
-			{
-				if (!ec) request.offers = std::move(offers);
+			cb->generate_rtc_offers(req.num_want,
+				[this, &ios, request = std::move(req), c](
+					error_code const& ec, std::vector<aux::rtc_offer> offers) mutable {
+					if (!ec)
+						request.offers = std::move(offers);
 
-				// m_abort may have been set (session shutdown) while this
-				// offer generation was in flight; the guard at the top of
-				// queue_request() only protects requests queued before
-				// m_abort was set, so re-check here before (re-)establishing
-				// a persistent connection, for the same reason the
-				// num_want==0 branch above avoids doing so during shutdown.
-				if (m_abort && request.event != event_t::stopped)
-				{
-					if (auto rc = c.lock())
-						post(ios,
-							std::bind(&request_callback::tracker_request_error,
-								rc,
-								std::move(request),
-								errors::torrent_aborted,
-								operation_t::connect,
-								"",
-								seconds32(0)));
-					return;
-				}
+					// m_abort may have been set (session shutdown) while this
+					// offer generation was in flight; the guard at the top of
+					// queue_request() only protects requests queued before
+					// m_abort was set, so re-check here before (re-)establishing
+					// a persistent connection, for the same reason the
+					// num_want==0 branch above avoids doing so during shutdown.
+					if (m_abort && request.event != event_t::stopped)
+					{
+						if (auto rc = c.lock())
+							post(ios,
+								std::bind(&request_callback::tracker_request_error,
+									rc,
+									std::move(request),
+									errors::torrent_aborted,
+									operation_t::connect,
+									"",
+									seconds32(0)));
+						return;
+					}
 
-				auto it = m_websocket_conns.find(request.url);
-				if (it != m_websocket_conns.end() && it->second->is_started()) {
-					it->second->queue_request(std::move(request), c);
-				} else {
-					auto con = std::make_shared<aux::websocket_tracker_connection>(
+					std::string const key = websocket_connection_key(request);
+					auto it = m_websocket_conns.find(key);
+					if (it != m_websocket_conns.end() && it->second->is_started())
+					{
+						it->second->queue_request(std::move(request), c);
+					}
+					else
+					{
+						auto con = std::make_shared<aux::websocket_tracker_connection>(
 							ios, *this, std::move(request), c);
-					con->start();
-					m_websocket_conns[request.url] = con;
-				}
-			});
+						con->start();
+						m_websocket_conns[key] = con;
+					}
+				});
 			return;
         }
 #endif
@@ -565,8 +574,8 @@ bool is_tracker_protocol_supported(string_view const url)
 				continue;
 			}
 
-			std::string const url = r.req.url;
-			auto const it = m_websocket_conns.find(url);
+			std::string const key = websocket_connection_key(r.req);
+			auto const it = m_websocket_conns.find(key);
 			if (it != m_websocket_conns.end() && it->second->is_started())
 			{
 				it->second->queue_rescued_request(std::move(r.req), std::move(r.cb), r.deadline);
@@ -576,9 +585,29 @@ bool is_tracker_protocol_supported(string_view const url)
 				auto con = std::make_shared<aux::websocket_tracker_connection>(
 					ios, *this, r.req, r.cb, r.deadline);
 				con->start();
-				m_websocket_conns[url] = con;
+				m_websocket_conns[key] = con;
 			}
 		}
+	}
+
+	bool tracker_manager::websocket_single_peer_id(std::string const& url) const
+	{
+		return m_websocket_single_peer_id.count(url) > 0;
+	}
+
+	void tracker_manager::set_websocket_single_peer_id(std::string const& url)
+	{
+		m_websocket_single_peer_id.insert(url);
+	}
+
+	std::string tracker_manager::websocket_connection_key(tracker_request const& req) const
+	{
+		if (!websocket_single_peer_id(req.url))
+			return req.url;
+
+		// a space can't be part of a URL, so this can't collide with the
+		// key of a shared connection
+		return req.url + " " + aux::to_hex({req.pid.data(), int(req.pid.size())});
 	}
 #endif
 

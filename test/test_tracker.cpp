@@ -1472,6 +1472,12 @@ TORRENT_TEST(websocket_tracker_announces_rescued_once)
 }
 
 
+// some trackers only allow one peer_id per connection,
+// and close it when another one announces. Since every torrent has its own
+// peer_id, torrents sharing a connection to such a tracker kept getting it
+// closed. This is learned from the tracker closing the connection after an
+// announce with a new peer_id, after which each torrent gets its own
+// connection to that tracker
 TORRENT_TEST(websocket_tracker_single_peer_id_learned)
 {
 	int const port = start_websocket_server(false, 30, "single-peer-id");

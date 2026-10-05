@@ -203,6 +203,17 @@ private:
 	};
 	std::optional<written_message> m_last_written;
 
+	// the peer_id of the first announce written on this connection
+	std::optional<peer_id> m_first_peer_id;
+
+	// the peer_ids whose announces the tracker responded to on this
+	// connection (with a response or a failure reason)
+	std::set<peer_id> m_answered_peer_ids;
+
+	// whether the tracker closing the connection was most likely caused by
+	// a second peer_id announcing on it (see on_read())
+	bool closed_for_new_peer_id() const;
+
 	// m_sending is true while the single outstanding WebSocket write is in
 	// progress. m_sending_request identifies it when that write is a tracker
 	// announce; an RTC answer leaves it empty.

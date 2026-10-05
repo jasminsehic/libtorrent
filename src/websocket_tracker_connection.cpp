@@ -320,6 +320,25 @@ void websocket_tracker_connection::mark_paused_unsupported(char const* reason)
 	m_man.set_websocket_paused_support(url, tracker_manager::paused_event_support::unsupported);
 }
 
+bool websocket_tracker_connection::closed_for_new_peer_id() const
+{
+	// a tracker that only allows one peer_id per connection responds to the
+	// first one's announces, and closes the connection on the first announce
+	// with another one. So the first peer_id must have been responded to,
+	// and another one must have announces outstanding that were never
+	// responded to. Announces are written back to back, so the responses
+	// to the first peer_id's announces commonly arrive after the other
+	// one's were written. Unlike close_culprit(), this doesn't require
+	// nothing to have been received since
+	if (!m_first_peer_id || m_answered_peer_ids.count(*m_first_peer_id) == 0)
+		return false;
+
+	return std::any_of(m_callbacks.begin(), m_callbacks.end(), [&](auto const& e) {
+		return e.second.pending && e.second.req.pid != *m_first_peer_id
+			&& m_answered_peer_ids.count(e.second.req.pid) == 0;
+	});
+}
+
 std::optional<sha1_hash> websocket_tracker_connection::close_culprit() const
 {
 	if (!m_last_written || !m_last_written->info_hash)
@@ -514,6 +533,9 @@ void websocket_tracker_connection::send_pending()
 			{
 				m_sending_request = m.info_hash;
 				m_last_written = written_message{m.info_hash, wire_event(m), clock_type::now()};
+
+				if (!m_first_peer_id)
+					m_first_peer_id = m.pid;
 			}
 			else
 			{
@@ -809,6 +831,27 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		if (last_written_paused_announce())
 			mark_paused_unsupported("connection closed after a paused announce");
 
+		// some trackers only allow a single peer_id
+		// per connection, and close it when another one announces. Since
+		// each torrent has its own peer_id, torrents sharing a connection to
+		// such a tracker would keep getting it closed. When the tracker
+		// closes the connection after an announce with a peer_id new to it,
+		// connect to this tracker separately for each peer_id from now on.
+		// The other announces on it are rescued below, onto their own
+		// connections. Closes we caused ourselves don't count
+		if (ec != boost::asio::error::operation_aborted && closed_for_new_peer_id()
+			&& !m_man.websocket_single_peer_id(tracker_req().url))
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (auto cb = requester())
+			{
+				cb->debug_log("*** WEBSOCKET_TRACKER one peer_id per connection [ url: %s ]",
+					tracker_req().url.c_str());
+			}
+#endif
+			m_man.set_websocket_single_peer_id(tracker_req().url);
+		}
+
 		// the tracker closed the connection, or it failed (including when
 		// websocket_stream detected it was dead). The outstanding announces,
 		// except the one that may have caused it, were only affected by it.
@@ -908,7 +951,14 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	std::shared_ptr<request_callback> cb;
 	auto const cit = m_callbacks.find(response.info_hash);
 	if (cit != m_callbacks.end())
+	{
 		cb = cit->second.cb.lock();
+
+		// the tracker accepts this peer_id on this connection (see
+		// closed_for_new_peer_id())
+		if (response.resp || !response.failure_reason.empty())
+			m_answered_peer_ids.insert(cit->second.req.pid);
+	}
 
 	if (cb)
 	{

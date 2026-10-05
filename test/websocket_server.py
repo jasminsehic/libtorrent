@@ -55,6 +55,8 @@ async def handle(websocket):
     #   responding, when its second message arrives. Respond normally on any
     #   later connection
     # close-always: close every connection when its first message arrives
+    # single-peer-id: like some trackers, only allow the peer_id of the first
+    #   announce on a connection, and close it when another one announces
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
 
     if mode == 'paused-required-silent-first-connection':
@@ -65,6 +67,9 @@ async def handle(websocket):
 
     # the number of messages received on this connection
     messages = 0
+
+    # the peer_id of the first announce on this connection
+    connection_peer_id = None
 
     try:
         while True:
@@ -87,6 +92,13 @@ async def handle(websocket):
                     await websocket.close()
                     return
                 continue
+
+            if mode == 'single-peer-id' and 'answer' not in request:
+                if connection_peer_id is None:
+                    connection_peer_id = request["peer_id"]
+                elif request["peer_id"] != connection_peer_id:
+                    await websocket.close()
+                    return
 
             if mode == 'silent':
                 continue
