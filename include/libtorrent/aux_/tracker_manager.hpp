@@ -25,6 +25,7 @@ see LICENSE file.
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <deque>
 
 #include "libtorrent/flags.hpp"
@@ -387,6 +388,20 @@ namespace libtorrent::aux {
 
 		paused_event_support get_websocket_paused_support(std::string const& url) const;
 		void set_websocket_paused_support(std::string const& url, paused_event_support support);
+
+		// some trackers only allow a single peer_id per
+		// connection, and close it when another one announces on it. Since
+		// libtorrent uses a separate peer_id for each torrent, torrents
+		// can't share a connection to such a tracker. This is learned per
+		// tracker (see websocket_tracker_connection::on_read()), and from
+		// then on each peer_id gets its own connection to it
+		bool websocket_single_peer_id(std::string const& url) const;
+		void set_websocket_single_peer_id(std::string const& url);
+
+		// the key of the connection req is sent on, in m_websocket_conns:
+		// the tracker URL, plus the peer_id for trackers that only allow
+		// one per connection
+		std::string websocket_connection_key(tracker_request const& req) const;
 #endif
 
 		void remove_request(aux::http_tracker_connection const* c);
@@ -433,10 +448,12 @@ namespace libtorrent::aux {
 		std::deque<std::shared_ptr<aux::http_tracker_connection>> m_queued;
 
 #if TORRENT_USE_RTC
-		// websocket connections by URL
+		// websocket connections by websocket_connection_key()
 		std::unordered_map<std::string, std::shared_ptr<aux::websocket_tracker_connection>> m_websocket_conns;
 		// learned paused-event support by WebSocket tracker
 		std::unordered_map<std::string, paused_event_support> m_websocket_paused_support;
+		// WebSocket trackers learned to only allow one peer_id per connection
+		std::unordered_set<std::string> m_websocket_single_peer_id;
 #endif
 
 		send_fun_t m_send_fun;
