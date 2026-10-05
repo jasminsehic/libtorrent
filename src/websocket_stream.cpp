@@ -12,7 +12,7 @@ see LICENSE file.
 #include "libtorrent/config.hpp" // for TORRENT_USE_RTC
 
 #if TORRENT_USE_RTC
-
+#include <cstdio>
 #include "libtorrent/aux_/websocket_stream.hpp"
 #include "libtorrent/aux_/debug.hpp"
 #include "libtorrent/error.hpp"
@@ -152,6 +152,13 @@ void websocket_stream::close_socket()
 
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
 {
+#ifndef TORRENT_DISABLE_LOGGING
+	std::printf("*** WEBSOCKET_STREAM_RESOLVE [ host: %s ec: %s addresses: %d ]\n",
+		m_hostname.c_str(),
+		ec ? ec.message().c_str() : "none",
+		int(addresses.size()));
+	std::fflush(stdout);
+#endif
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
 
 	// the connection attempt was aborted by close()
@@ -193,6 +200,11 @@ void websocket_stream::do_tcp_connect(std::vector<tcp::endpoint> endpoints)
 
 void websocket_stream::on_tcp_connect(error_code const& ec)
 {
+#ifndef TORRENT_DISABLE_LOGGING
+	std::printf(
+		"*** WEBSOCKET_STREAM_TCP_CONNECT [ ec: %s ]\n", ec ? ec.message().c_str() : "none");
+	std::fflush(stdout);
+#endif
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
 
 	// the connection attempt was aborted by close()
@@ -287,6 +299,10 @@ void websocket_stream::do_handshake()
 
 void websocket_stream::on_handshake(error_code const& ec)
 {
+#ifndef TORRENT_DISABLE_LOGGING
+	std::printf("*** WEBSOCKET_STREAM_HANDSHAKE [ ec: %s ]\n", ec ? ec.message().c_str() : "none");
+	std::fflush(stdout);
+#endif
 	COMPLETE_ASYNC("websocket_stream::on_handshake");
 	auto handler = std::exchange(m_connect_handler, nullptr);
 	if (ec)
