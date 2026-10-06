@@ -945,6 +945,57 @@ TORRENT_TEST(websocket_tracker)
 	std::printf("done\n");
 }
 
+TORRENT_TEST(websocket_tracker_timeout)
+{
+	int const http_port = start_websocket_server(false, 30, "silent");
+
+	settings_pack pack = settings();
+	pack.set_bool(settings_pack::announce_to_all_trackers, true);
+	pack.set_int(settings_pack::tracker_completion_timeout, 1);
+
+	auto s = std::make_unique<lt::session>(pack);
+
+	error_code ec;
+	remove_all("tmp5_tracker", ec);
+	create_directory("tmp5_tracker", ec);
+
+	std::ofstream file(combine_path("tmp5_tracker", "temporary").c_str());
+	add_torrent_params addp = ::create_torrent(&file, "temporary", 16 * 1024, 13, false);
+	file.close();
+
+	char tracker_url[200];
+	std::snprintf(tracker_url, sizeof(tracker_url), "ws://127.0.0.1:%d/announce", http_port);
+	addp.trackers.push_back(tracker_url);
+
+	addp.flags &= ~torrent_flags::paused;
+	addp.flags &= ~torrent_flags::auto_managed;
+	addp.flags |= torrent_flags::seed_mode;
+	addp.save_path = "tmp5_tracker";
+
+	torrent_handle h = s->add_torrent(addp);
+
+	const alert* a = wait_for_alert(*s, tracker_error_alert::alert_type, "s");
+
+	TEST_CHECK(a);
+
+	if (a)
+	{
+		auto const* te = alert_cast<tracker_error_alert>(a);
+		TEST_CHECK(te);
+
+		if (te)
+		{
+			TEST_EQUAL(te->error, errors::timed_out);
+			TEST_CHECK(te->op == operation_t::timer);
+			TEST_CHECK(std::string(te->failure_reason()).find("tracker announce timed out")
+				!= std::string::npos);
+		}
+	}
+
+	s.reset();
+	stop_websocket_server();
+}
+
 namespace {
 
 struct tracker_alert_counts
@@ -1090,6 +1141,95 @@ TORRENT_TEST(websocket_tracker_duplicate_response_ignored)
 		TEST_EQUAL(counts.errors, 0);
 	}
 	stop_websocket_server();
+}
+
+// when an announce times out without anything at all having been received on
+// the connection, the connection is presumed dead (e.g. half-open) and is
+// replaced. It used to be reused, making every subsequent announce time out
+// as well
+TORRENT_TEST(websocket_tracker_dead_connection_replaced)
+{
+	int const port = start_websocket_server(false, 30, "silent-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 2);
+		lt::session s(pack);
+		torrent_handle h =
+			add_websocket_tracker_torrent(s, "tmp10_tracker", websocket_tracker_url(port));
+
+		auto counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.replies, 0);
+		TEST_CHECK(counts.errors >= 1);
+		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+		TEST_CHECK(counts.last_op == operation_t::timer);
+
+		// the server only responds on new connections
+		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+
+		counts = count_tracker_alerts(s, seconds(5));
+		// add_websocket_tracker_torrent() creates a hybrid v1/v2 torrent, so the single torrent
+		// generates two announces and therefore two successful tracker replies.
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// malformed tracker messages must not refresh the connection's activity
+// timestamp. Otherwise a dead connection that keeps sending malformed
+// messages can survive announce timeouts and be reused.
+TORRENT_TEST(websocket_tracker_malformed_response_does_not_keep_connection_alive)
+{
+	int const port = start_websocket_server(false, 30, "malformed-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 2);
+		lt::session s(pack);
+		torrent_handle h =
+			add_websocket_tracker_torrent(s, "tmp12_tracker", websocket_tracker_url(port));
+
+		auto counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.replies, 0);
+		TEST_CHECK(counts.errors >= 1);
+		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+		TEST_CHECK(counts.last_op == operation_t::timer);
+
+		// The first connection only sends malformed responses. A correct
+		// implementation must replace that connection after the timeout,
+		// so the forced reannounce uses a new connection.
+		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+
+		counts = count_tracker_alerts(s, seconds(5));
+		// add_websocket_tracker_torrent() creates a hybrid v1/v2 torrent,
+		// so the single torrent generates two announces.
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// the announce deadline also covers establishing the connection. A server
+// that accepts the TCP connection but never completes the WebSocket handshake
+// used to leave the announce queued, "updating", forever
+TORRENT_TEST(websocket_tracker_handshake_timeout)
+{
+	// the kernel completes the TCP handshake for a listening socket even
+	// though nothing ever accepts the connection, so the WebSocket
+	// handshake never completes
+	lt::io_context ioc;
+	tcp::acceptor acceptor(ioc, tcp::endpoint(make_address_v4("127.0.0.1"), 0));
+	int const port = acceptor.local_endpoint().port();
+
+	settings_pack pack = websocket_tracker_settings();
+	pack.set_int(settings_pack::tracker_completion_timeout, 2);
+	lt::session s(pack);
+	add_websocket_tracker_torrent(s, "tmp11_tracker", websocket_tracker_url(port));
+
+	auto const counts = count_tracker_alerts(s, seconds(6));
+	TEST_EQUAL(counts.replies, 0);
+	TEST_CHECK(counts.errors >= 1);
+	TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+	TEST_CHECK(counts.last_op == operation_t::timer);
 }
 #endif
 
