@@ -345,6 +345,23 @@ namespace libtorrent::aux {
 		tracker_manager(tracker_manager const&) = delete;
 		tracker_manager& operator=(tracker_manager const&) = delete;
 
+#if TORRENT_USE_RTC
+		// an announce taken off a WebSocket tracker connection that died
+		// before it timed out, to be sent again on a new connection. It keeps
+		// its original deadline
+		struct websocket_rescued_request
+		{
+			tracker_request req;
+			std::weak_ptr<request_callback> cb;
+			time_point deadline;
+		};
+
+		// sends announces taken off a dead WebSocket tracker connection again,
+		// on the current (new) connection to their tracker
+		void requeue_websocket_requests(
+			io_context& ios, std::vector<websocket_rescued_request> reqs);
+#endif
+
 		void queue_request(
 			io_context& ios
 			, tracker_request&& r

@@ -33,6 +33,7 @@ see LICENSE file.
 #include <deque>
 #include <map>
 #include <memory>
+#include <set>
 #include <tuple>
 #include <variant>
 #include <optional>
@@ -50,11 +51,13 @@ struct TORRENT_EXTRA_EXPORT websocket_tracker_connection : tracker_connection
 {
 	friend class tracker_manager;
 
-	websocket_tracker_connection(
-		io_context& ios
-		, tracker_manager& man
-		, tracker_request const& req
-		, std::weak_ptr<request_callback> cb);
+	// deadline is only set for an announce rescued from a dead connection,
+	// see queue_rescued_request()
+	websocket_tracker_connection(io_context& ios,
+		tracker_manager& man,
+		tracker_request const& req,
+		std::weak_ptr<request_callback> cb,
+		std::optional<time_point> deadline = std::nullopt);
 	~websocket_tracker_connection() override = default;
 
 	void start() override;
@@ -69,6 +72,11 @@ struct TORRENT_EXTRA_EXPORT websocket_tracker_connection : tracker_connection
 	bool prune_non_stopped_requests();
 
 	void queue_request(tracker_request req, std::weak_ptr<request_callback> cb);
+	// queues an announce rescued from a dead connection, keeping its
+	// original deadline. It won't be rescued again if this connection dies
+	// too
+	void queue_rescued_request(
+		tracker_request req, std::weak_ptr<request_callback> cb, time_point deadline);
 	void queue_answer(tracker_answer ans);
 
 private:
@@ -148,6 +156,28 @@ private:
 	// most likely about it
 	callback_entry* last_written_paused_announce();
 	void mark_paused_unsupported(char const* reason);
+
+	// when this connection dies, takes the announces still outstanding on it
+	// (sent or not) that haven't timed out yet off it, to be sent again on a
+	// new connection (see rescue()). Except for culprit, the announce
+	// believed to have caused the connection to be closed, and announces
+	// that were already rescued once. Those are left for close() to report
+	std::vector<tracker_manager::websocket_rescued_request> take_rescuable_requests(
+		std::optional<sha1_hash> culprit);
+	// hands rescued announces to tracker_manager, to be sent again on a new
+	// connection. Must be called after close(), so that a new connection is
+	// used
+	void rescue(std::vector<tracker_manager::websocket_rescued_request> reqs);
+	// the announce believed to have caused the tracker to close the
+	// connection: the last message written, if it was an announce still
+	// outstanding and nothing well-formed was received since
+	std::optional<sha1_hash> close_culprit() const;
+
+	// info-hashes of announces on this connection that were rescued from a
+	// dead connection. Each announce is only rescued once, so a tracker that
+	// closes every connection can't make rescued announces bounce between
+	// new connections until they time out
+	std::set<sha1_hash> m_rescued_requests;
 
 	deadline_timer m_announce_timer;
 

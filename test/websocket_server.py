@@ -51,6 +51,10 @@ async def handle(websocket):
     #   announce again. Respond normally to others
     # paused-required-silent-first-connection: never respond on the first
     #   connection, behave like paused-required on any later connection
+    # close-after-two-first-connection: close the first connection, without
+    #   responding, when its second message arrives. Respond normally on any
+    #   later connection
+    # close-always: close every connection when its first message arrives
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
 
     if mode == 'paused-required-silent-first-connection':
@@ -58,6 +62,9 @@ async def handle(websocket):
 
     # the last announce response sent on this connection
     last_response = None
+
+    # the number of messages received on this connection
+    messages = 0
 
     try:
         while True:
@@ -70,6 +77,16 @@ async def handle(websocket):
                 file=sys.stderr)
 
             request = json.loads(message)
+            messages += 1
+
+            if mode == 'close-always':
+                await websocket.close()
+                return
+            if mode == 'close-after-two-first-connection' and connection_index == 1:
+                if messages == 2:
+                    await websocket.close()
+                    return
+                continue
 
             if mode == 'silent':
                 continue

@@ -539,6 +539,47 @@ bool is_tracker_protocol_supported(string_view const url)
 	{
 		m_websocket_paused_support[url] = support;
 	}
+
+	void tracker_manager::requeue_websocket_requests(
+		io_context& ios, std::vector<websocket_rescued_request> reqs)
+	{
+		TORRENT_ASSERT(is_single_thread());
+
+		for (auto& r : reqs)
+		{
+			// same as in queue_request(): don't (re-)establish connections
+			// while shutting down, other than to announce stopped
+			if (m_abort && r.req.event != event_t::stopped)
+			{
+				if (auto c = r.cb.lock())
+				{
+					post(ios,
+						std::bind(&request_callback::tracker_request_error,
+							c,
+							std::move(r.req),
+							errors::torrent_aborted,
+							operation_t::connect,
+							"",
+							seconds32(0)));
+				}
+				continue;
+			}
+
+			std::string const url = r.req.url;
+			auto const it = m_websocket_conns.find(url);
+			if (it != m_websocket_conns.end() && it->second->is_started())
+			{
+				it->second->queue_rescued_request(std::move(r.req), std::move(r.cb), r.deadline);
+			}
+			else
+			{
+				auto con = std::make_shared<aux::websocket_tracker_connection>(
+					ios, *this, r.req, r.cb, r.deadline);
+				con->start();
+				m_websocket_conns[url] = con;
+			}
+		}
+	}
 #endif
 
 	void tracker_manager::abort_all_requests(bool all)

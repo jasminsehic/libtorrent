@@ -1074,15 +1074,18 @@ lt::settings_pack websocket_tracker_settings()
 	return pack;
 }
 
-torrent_handle add_websocket_tracker_torrent(
-	lt::session& s, char const* save_path, std::string const& tracker_url)
+torrent_handle add_websocket_tracker_torrent(lt::session& s,
+	char const* save_path,
+	std::string const& tracker_url,
+	char const* torrent_name = "temporary",
+	lt::create_flags_t flags = {})
 {
 	error_code ec;
 	remove_all(save_path, ec);
 	create_directory(save_path, ec);
 
-	std::ofstream file(combine_path(save_path, "temporary").c_str());
-	add_torrent_params addp = ::create_torrent(&file, "temporary", 16 * 1024, 13, false);
+	std::ofstream file(combine_path(save_path, torrent_name).c_str());
+	add_torrent_params addp = ::create_torrent(&file, torrent_name, 16 * 1024, 13, false, flags);
 	file.close();
 
 	addp.trackers.push_back(tracker_url);
@@ -1375,6 +1378,94 @@ TORRENT_TEST(websocket_tracker_paused_dead_connection_not_learned)
 	stop_websocket_server();
 }
 
+// when a connection is found dead because an announce timed out, the other
+// announces on it that haven't timed out yet are sent again on a new
+// connection, instead of failing too
+TORRENT_TEST(websocket_tracker_dead_connection_rescues_announces)
+{
+	int const port = start_websocket_server(false, 30, "silent-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 3);
+		pack.set_int(settings_pack::max_webtorrent_offers, 1);
+		lt::session s(pack);
+
+		// The first torrent has a single v1 announce. It times out first
+		// and identifies the shared connection as dead.
+		add_websocket_tracker_torrent(s,
+			"tmp20_tracker",
+			websocket_tracker_url(port),
+			"temporary",
+			lt::create_torrent::v1_only);
+
+		std::this_thread::sleep_for(500ms);
+
+		// These announces get fresh 10-second deadlines and therefore
+		// still have plenty of time when the first connection dies.
+		pack.set_int(settings_pack::tracker_completion_timeout, 10);
+		s.apply_settings(pack);
+
+		// Hybrid v1/v2 torrent: two announces to rescue.
+		add_websocket_tracker_torrent(
+			s, "tmp21_tracker", websocket_tracker_url(port), "temporary2");
+
+		auto const counts = count_tracker_alerts(s, seconds(15));
+
+		// One short-deadline announce times out on the dead connection.
+		// The two later announces are rescued and succeed.
+		TEST_EQUAL(counts.errors + counts.replies, 3);
+		TEST_EQUAL(counts.errors, 1);
+		TEST_EQUAL(counts.replies, 2);
+	}
+	stop_websocket_server();
+}
+
+// when the tracker closes the connection, the outstanding announces other
+// than the last one written (which may have caused it) are sent again on a
+// new connection, instead of failing too
+TORRENT_TEST(websocket_tracker_closed_connection_rescues_announces)
+{
+	int const port = start_websocket_server(false, 30, "close-after-two-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 10);
+		lt::session s(pack);
+
+		// a hybrid v1/v2 torrent announces twice, and the tracker closes the
+		// connection on receiving the second announce
+		add_websocket_tracker_torrent(s, "tmp22_tracker", websocket_tracker_url(port));
+
+		auto const counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.errors, 1);
+		TEST_EQUAL(counts.replies, 1);
+	}
+	stop_websocket_server();
+}
+
+// an announce is only rescued once. A tracker that closes every connection
+// must not make it bounce between new connections until it times out
+TORRENT_TEST(websocket_tracker_announces_rescued_once)
+{
+	int const port = start_websocket_server(false, 30, "close-always");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		// much longer than the test, so an announce bouncing between
+		// connections until it times out would be noticed
+		pack.set_int(settings_pack::tracker_completion_timeout, 10);
+		lt::session s(pack);
+
+		add_websocket_tracker_torrent(s, "tmp23_tracker", websocket_tracker_url(port));
+
+		// both of the hybrid torrent's announces fail right away: one with
+		// the connection it was sent on, the other on the connection it was
+		// rescued to
+		auto const counts = count_tracker_alerts(s, seconds(4));
+		TEST_EQUAL(counts.errors, 2);
+		TEST_EQUAL(counts.replies, 0);
+	}
+	stop_websocket_server();
+}
+
 // a failure reason without an info_hash (sent by trackers for requests they
 // can't parse) can't be attributed to any torrent. It used to close the
 // connection, failing every torrent announcing over it
@@ -1446,7 +1537,11 @@ TORRENT_TEST(websocket_tracker_dead_connection_replaced)
 			add_websocket_tracker_torrent(s, "tmp10_tracker", websocket_tracker_url(port));
 
 		auto counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 0);
+		// the hybrid torrent's two announces each have exactly one outcome.
+		// The first one to time out finds the connection dead. The other,
+		// sent moments later, may not have timed out yet, in which case it's
+		// rescued and responded to on the new connection
+		TEST_EQUAL(counts.errors + counts.replies, 2);
 		TEST_CHECK(counts.errors >= 1);
 		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
 		TEST_CHECK(counts.last_op == operation_t::timer);
@@ -1477,7 +1572,9 @@ TORRENT_TEST(websocket_tracker_malformed_response_does_not_keep_connection_alive
 			add_websocket_tracker_torrent(s, "tmp12_tracker", websocket_tracker_url(port));
 
 		auto counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 0);
+		// see websocket_tracker_dead_connection_replaced: the other announce
+		// may have been rescued onto the new connection
+		TEST_EQUAL(counts.errors + counts.replies, 2);
 		TEST_CHECK(counts.errors >= 1);
 		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
 		TEST_CHECK(counts.last_op == operation_t::timer);
