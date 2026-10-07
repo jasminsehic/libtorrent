@@ -1466,6 +1466,49 @@ TORRENT_TEST(websocket_tracker_announces_rescued_once)
 	stop_websocket_server();
 }
 
+// some trackers only allow one peer_id per connection,
+// and close it when another one announces. Since every torrent has its own
+// peer_id, torrents sharing a connection to such a tracker kept getting it
+// closed. This is learned from the tracker closing the connection after an
+// announce with a new peer_id, after which each torrent gets its own
+// connection to that tracker
+TORRENT_TEST(websocket_tracker_single_peer_id_learned)
+{
+	int const port = start_websocket_server(false, 30, "single-peer-id");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 10);
+		lt::session s(pack);
+
+		// two torrents, with different peer_ids, announcing to the same
+		// tracker. The second one to announce gets the shared connection
+		// closed
+		torrent_handle h1 =
+			add_websocket_tracker_torrent(s, "tmp24_tracker", websocket_tracker_url(port));
+		torrent_handle h2 = add_websocket_tracker_torrent(
+			s, "tmp25_tracker", websocket_tracker_url(port), "temporary2");
+
+		auto counts = count_tracker_alerts(s, seconds(5));
+		// hybrid v1/v2 torrents announce twice, so there are 4 announces,
+		// each with exactly one outcome. The first torrent's are responded
+		// to. The second torrent's announces outstanding when the connection
+		// was closed are rescued onto connections of their own, except the
+		// one that may have caused it (if nothing was received after it)
+		TEST_EQUAL(counts.errors + counts.replies, 4);
+		TEST_CHECK(counts.replies >= 3);
+
+		// from now on, each torrent has its own connection to this tracker,
+		// so announcing again succeeds for both
+		h1.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+		h2.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+
+		counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.replies, 4);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
 // a failure reason without an info_hash (sent by trackers for requests they
 // can't parse) can't be attributed to any torrent. It used to close the
 // connection, failing every torrent announcing over it
