@@ -107,11 +107,13 @@ static rtc_log_appender appender;
 rtc_signaling::rtc_signaling(io_context& ioc,
 	torrent* t,
 	rtc_stream_handler handler,
-	offer_creation_hook offer_creation_hook)
+	offer_creation_hook offer_creation_hook,
+	rtc_configuration_hook configuration_hook)
 	: m_io_context(ioc)
 	, m_torrent(t)
 	, m_rtc_stream_handler(std::move(handler))
 	, m_offer_creation_hook(std::move(offer_creation_hook))
+	, m_rtc_configuration_hook(std::move(configuration_hook))
 {
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling created");
@@ -379,6 +381,10 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	std::string stun_server = m_torrent->settings().get_str(settings_pack::webtorrent_stun_server);
 	if (!stun_server.empty())
 		config.iceServers.emplace_back(std::move(stun_server));
+
+	// Allow tests to constrain libdatachannel's local UDP port selection.
+	if (m_rtc_configuration_hook)
+		m_rtc_configuration_hook(config);
 
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
 	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id](
