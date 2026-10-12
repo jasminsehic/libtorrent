@@ -704,6 +704,72 @@ void test_offer_creation_failure()
 	sig->close();
 }
 
+// Force libdatachannel to bind a UDP port that is already occupied. This
+// exercises the real socket-allocation failure path rather than injecting an
+// exception at the call site.
+void test_offer_udp_port_exhaustion()
+{
+	time_point const start_time = clock_type::now();
+
+	using udp = boost::asio::ip::udp;
+	udp::socket occupied_socket(io_context,
+		udp::endpoint(boost::asio::ip::make_address_v4("127.0.0.1"), 0));
+	std::uint16_t const occupied_port = occupied_socket.local_endpoint().port();
+	TEST_CHECK(occupied_port != 0);
+
+	session_mock ses(io_context);
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 2);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+
+	int calls = 0;
+	error_code result;
+	int num_offers = -1;
+
+	auto offers_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		result = ec;
+		num_offers = int(offers.size());
+		success = true;
+	};
+
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		rtc_signaling::offer_creation_hook{},
+		[occupied_port](rtc::Configuration& config) {
+			// Constrain ICE to precisely the port still held by occupied_socket.
+			config.bindAddress = std::string("127.0.0.1");
+			config.portRangeBegin = occupied_port;
+			config.portRangeEnd = occupied_port;
+		});
+
+	bool threw = false;
+	try
+	{
+		sig->generate_offers(1, offers_handler);
+	}
+	catch (std::exception const& e)
+	{
+		threw = true;
+		std::cout << "generate_offers() threw: " << e.what() << std::endl;
+	}
+
+	TEST_CHECK(!threw);
+
+	run_test();
+
+	TEST_EQUAL(calls, 1);
+	TEST_EQUAL(result,
+		boost::system::errc::make_error_code(boost::system::errc::resource_unavailable_try_again));
+	TEST_EQUAL(num_offers, 0);
+
+	ses.print_alerts(start_time);
+	sig->close();
+}
+
 // when only some of a batch's offers fail to be created, the batch must still
 // complete, delivering the offers that succeeded without an error. The
 // failure happens after the connection was created, which is where
@@ -843,6 +909,7 @@ TORRENT_TEST(websocket_pong_timeout) { test_websocket_pong_timeout(); }
 TORRENT_TEST(signaling_offer_timeout) { test_offer_timeout(); }
 TORRENT_TEST(signaling_offer_batches_are_independent) { test_offer_batches_are_independent(); }
 TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
+TORRENT_TEST(signaling_offer_udp_port_exhaustion) { test_offer_udp_port_exhaustion(); }
 TORRENT_TEST(signaling_offer_creation_partial_failure) { test_offer_creation_partial_failure(); }
 TORRENT_TEST(signaling_offer_partial_failure_batches_are_independent)
 {
