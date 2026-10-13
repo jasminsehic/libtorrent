@@ -109,7 +109,8 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 
 	settings_pack pack = settings();
 	// Enable all alert categories; handshake records are written to a file
-	// because CI test runners may capture or suppress stdout.
+	// because CI test runners may capture or suppress stdout. The file is
+	// uploaded as a workflow artifact for review.
 	pack.set_int(settings_pack::alert_mask, alert::all_categories);
 	session_params sp(pack);
 	lt::session ses1(sp);
