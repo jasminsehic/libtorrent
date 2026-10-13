@@ -124,7 +124,7 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 		ct.set_hash(lt::piece_index_t{0}, lt::hasher("Test", 4).final());
 		std::vector<char> torrent_buffer;
 		lt::bencode(std::back_inserter(torrent_buffer), ct.generate());
-		atp = lt::load_torrent_buffer(torrent_buffer);
+		atp = lt::load_torrent_buffer({torrent_buffer.data(), int(torrent_buffer.size())});
 
 		// setup_transfer() expects the seeder's files to already exist when a
 		// torrent_info is supplied. Keep the on-disk payload byte-for-byte
