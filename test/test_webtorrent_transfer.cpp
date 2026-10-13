@@ -14,6 +14,7 @@ see LICENSE file.
 #if TORRENT_USE_RTC
 
 #include "libtorrent/session.hpp"
+#include "libtorrent/load_torrent.hpp"
 #include "libtorrent/session_params.hpp"
 #include "libtorrent/alert_types.hpp"
 #include "libtorrent/aux_/torrent.hpp"
