@@ -102,7 +102,7 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	session_proxy p2;
 
 	std::ofstream bep10_log("bep10-handshake.log", std::ios::out | std::ios::app);
-	bep10_log << "\n=== WebTorrent RTC metadata test: "
+	bep10_log << "\n=== Issue #8527 BEP 10 capture: "
 		<< (use_metadata_transfer ? "magnet metadata transfer" : "known metadata control")
 		<< " ===\n";
 	bep10_log.flush();
