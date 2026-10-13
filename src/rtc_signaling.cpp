@@ -108,12 +108,14 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 	torrent* t,
 	rtc_stream_handler handler,
 	offer_creation_hook offer_creation_hook,
-	rtc_configuration_hook configuration_hook)
+	rtc_configuration_hook configuration_hook,
+	rtc_exception_hook exception_hook)
 	: m_io_context(ioc)
 	, m_torrent(t)
 	, m_rtc_stream_handler(std::move(handler))
 	, m_offer_creation_hook(std::move(offer_creation_hook))
 	, m_rtc_configuration_hook(std::move(configuration_hook))
+	, m_rtc_exception_hook(std::move(exception_hook))
 {
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling created");
@@ -239,7 +241,8 @@ void rtc_signaling::generate_offers(int const count, offers_handler handler)
 		}
 		catch (std::exception const& e)
 		{
-			TORRENT_UNUSED(e);
+			if (m_rtc_exception_hook)
+				m_rtc_exception_hook(e.what());
 #ifndef TORRENT_DISABLE_LOGGING
 			debug_log("*** RTC signaling failed to create offer [ offer: %s ]: %s",
 				offer_id_hex(offer_id).c_str(),
