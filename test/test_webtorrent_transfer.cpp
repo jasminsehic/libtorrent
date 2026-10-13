@@ -101,6 +101,9 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	session_proxy p2;
 
 	settings_pack pack = settings();
+	// Include peer-log alerts so the test records the outgoing and incoming
+	// BEP 10 extended handshakes on both ends of the RTC connection.
+	pack.set_int(settings_pack::alert_mask, alert::all_categories);
 	session_params sp(pack);
 	lt::session ses1(sp);
 	lt::session ses2(sp);
@@ -108,9 +111,22 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	int const piece_size = 16 * 1024;
 
 	create_directory("tmp1" + suffix, ec);
-	std::ofstream file(combine_path("tmp1" + suffix, "temporary"));
-	add_torrent_params atp = ::create_torrent(&file, "temporary", piece_size, 9, false);
-	file.close();
+	add_torrent_params atp;
+	if (use_metadata_transfer)
+	{
+		// Match issue #8527's minimal torrent: one file named test.txt with
+		// exactly four bytes. The magnet peer must learn its info dictionary
+		// over RTC before it can enter the seeding state.
+		std::vector<lt::create_file_entry> files;
+		files.emplace_back("test.txt", 4);
+		atp = make_torrent(std::move(files), piece_size);
+	}
+	else
+	{
+		std::ofstream file(combine_path("tmp1" + suffix, "temporary"));
+		atp = ::create_torrent(&file, "temporary", piece_size, 9, false);
+		file.close();
+	}
 
 	atp.flags &= ~torrent_flags::paused;
 	atp.flags &= ~torrent_flags::auto_managed;
@@ -139,6 +155,15 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 		{
 			TEST_CHECK(pc->socket_type == socket_type_t::rtc);
 			++rtc_connects;
+		}
+		if (auto const* log = alert_cast<peer_log_alert>(a))
+		{
+			if (log->event_type == peer_log_alert::extended_handshake)
+			{
+				std::cout << "[BEP10]["
+					<< (log->direction == peer_log_alert::incoming_message ? "incoming" : "outgoing")
+					<< "] " << log->log_message() << std::endl;
+			}
 		}
 		return false;
 	};
