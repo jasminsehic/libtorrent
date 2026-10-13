@@ -726,6 +726,7 @@ void test_offer_udp_port_exhaustion()
 	int calls = 0;
 	error_code result;
 	int num_offers = -1;
+	std::string caught_exception;
 
 	auto offers_handler = [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
 		++calls;
@@ -744,6 +745,9 @@ void test_offer_udp_port_exhaustion()
 			config.bindAddress = std::string("127.0.0.1");
 			config.portRangeBegin = occupied_port;
 			config.portRangeEnd = occupied_port;
+		},
+		[&](std::string const& message) {
+			caught_exception = message;
 		});
 
 	bool threw = false;
@@ -758,6 +762,13 @@ void test_offer_udp_port_exhaustion()
 	}
 
 	TEST_CHECK(!threw);
+
+	// This hook runs only inside generate_offers()'s std::exception handler.
+	// Require the real libdatachannel exception to be observed, not merely
+	// the translated error returned to the batch handler.
+	TEST_CHECK(!caught_exception.empty());
+	std::cout << "Caught libdatachannel offer-creation exception: "
+		<< caught_exception << std::endl;
 
 	run_test();
 
