@@ -101,9 +101,15 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	session_proxy p1;
 	session_proxy p2;
 
+	std::ofstream bep10_log("bep10-handshake.log", std::ios::out | std::ios::app);
+	bep10_log << "\n=== WebTorrent RTC metadata test: "
+		<< (use_metadata_transfer ? "magnet metadata transfer" : "known metadata control")
+		<< " ===\n";
+	bep10_log.flush();
+
 	settings_pack pack = settings();
-	// Include peer-log alerts so the test records the outgoing and incoming
-	// BEP 10 extended handshakes on both ends of the RTC connection.
+	// Enable all alert categories; handshake records are written to a file
+	// because CI test runners may capture or suppress stdout.
 	pack.set_int(settings_pack::alert_mask, alert::all_categories);
 	session_params sp(pack);
 	lt::session ses1(sp);
@@ -162,6 +168,7 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	// TCP/uTP connection by construction, but verify it positively too: every
 	// peer_connect_alert must report socket_type_t::rtc.
 	int rtc_connects = 0;
+	char const* current_session = "unknown";
 	auto const check_socket_type = [&](alert const* a) {
 		if (auto const* pc = alert_cast<peer_connect_alert>(a))
 		{
@@ -172,9 +179,10 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 		{
 			if (log->event_type == peer_log_alert::extended_handshake)
 			{
-				std::cout << "[BEP10]["
+				bep10_log << "[BEP10][" << current_session << "]["
 					<< (log->direction == peer_log_alert::incoming_message ? "incoming" : "outgoing")
-					<< "] " << log->log_message() << std::endl;
+					<< "] " << log->log_message() << '\n';
+				bep10_log.flush();
 			}
 		}
 		return false;
@@ -185,7 +193,9 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	{
 		ses2.wait_for_alert(200ms);
 
+		current_session = "ses1";
 		print_alerts(ses1, "ses1", false, false, check_socket_type);
+		current_session = "ses2";
 		print_alerts(ses2, "ses2", false, false, check_socket_type);
 
 		if (tor2.status().is_seeding) break;
