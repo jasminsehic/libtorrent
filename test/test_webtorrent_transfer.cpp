@@ -119,7 +119,18 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 		// over RTC before it can enter the seeding state.
 		std::vector<lt::create_file_entry> files;
 		files.emplace_back("test.txt", 4);
-		atp = make_torrent(std::move(files), piece_size);
+		lt::create_torrent ct(std::move(files), piece_size);
+		ct.set_hash(lt::piece_index_t{0}, lt::hasher("Test", 4).final());
+		std::vector<char> torrent_buffer;
+		lt::bencode(std::back_inserter(torrent_buffer), ct.generate());
+		atp = lt::load_torrent_buffer(torrent_buffer);
+
+		// setup_transfer() expects the seeder's files to already exist when a
+		// torrent_info is supplied. Keep the on-disk payload byte-for-byte
+		// identical to the torrent's sole piece.
+		std::ofstream file(combine_path("tmp1" + suffix, "test.txt"), std::ios::binary);
+		file.write("Test", 4);
+		file.close();
 	}
 	else
 	{
