@@ -88,6 +88,10 @@ private:
 	void on_write(error_code const& ec, std::size_t bytes_written);
 	// the time by which the tracker must have responded to req
 	time_point request_deadline(tracker_request const& req) const;
+	// the event sent to the tracker for req. paused is omitted for trackers
+	// known not to support it
+	event_t wire_event(tracker_request const& req) const;
+
 	void update_announce_timer();
 	void on_announce_timeout(error_code const& ec);
 	// wraps tracker_connection::fail
@@ -137,12 +141,37 @@ private:
 	std::map<sha1_hash, callback_entry> m_callbacks;
 	std::map<sha1_hash, int> m_offer_quota;
 
+	// if the last message written was a paused announce that's still
+	// outstanding, with no well-formed message received since, returns its
+	// entry in m_callbacks, otherwise nullptr. A tracker reaction that
+	// doesn't identify the request it's about, received in that state, is
+	// most likely about it
+	callback_entry* last_written_paused_announce();
+	void mark_paused_unsupported(char const* reason);
+
 	deadline_timer m_announce_timer;
 
-	// the last time anything was received on this connection (or when it
-	// was established). Used to tell a tracker that doesn't respond to a
-	// request apart from a connection that's dead
+	// the last time a well-formed message was received on this connection
+	// (or when it was established). Malformed messages deliberately don't
+	// count: a tracker that only sends us messages we can't make sense of is
+	// no more useful than a dead one, so it mustn't stop the connection from
+	// being replaced. Used to tell a tracker that doesn't respond to a
+	// request apart from a connection that's dead (see on_announce_timeout())
 	time_point m_last_receive = min_time();
+
+	// the last message written to the tracker. Used to attribute reactions
+	// the tracker itself doesn't attribute to a request, i.e. closing the
+	// connection or a failure reason without an info_hash, to the message
+	// that most likely caused them
+	struct written_message
+	{
+		// set for announces, empty for RTC answers
+		std::optional<sha1_hash> info_hash;
+		// the event actually sent
+		event_t event = event_t::none;
+		time_point time;
+	};
+	std::optional<written_message> m_last_written;
 
 	// m_sending is true while the single outstanding WebSocket write is in
 	// progress. m_sending_request identifies it when that write is a tracker
@@ -157,6 +186,9 @@ struct websocket_tracker_response {
 	std::optional<aux::rtc_offer> offer;
 	std::optional<aux::rtc_answer> answer;
 	std::string failure_reason;
+	// false for a failure reason without an info_hash, which trackers send
+	// in response to requests they can't parse. info_hash is not valid then
+	bool has_info_hash = true;
 };
 
 TORRENT_EXTRA_EXPORT std::variant<websocket_tracker_response, std::string>
