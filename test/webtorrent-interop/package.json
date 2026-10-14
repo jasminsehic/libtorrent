@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "bundle": "esbuild client.js --bundle --platform=browser --format=iife --outfile=public/client.bundle.js"
+    "bundle": "esbuild client.js --bundle --platform=browser --format=iife --outfile=client.bundle.js"
   },
   "devDependencies": {
     "bittorrent-tracker": "11.2.1",
