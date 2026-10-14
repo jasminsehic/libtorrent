@@ -36,7 +36,6 @@ jobs:
           set -euxo pipefail
           pwd
           command -v b2
-          b2 --version
 
           cd test
           # Force compilation so the TORRENT_USE_RTC guard in the test source
