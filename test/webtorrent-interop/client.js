@@ -1,5 +1,4 @@
 import './polyfills.js'
-import WebTorrent from 'webtorrent'
 
 window.runWebTorrentInterop = async function (args) {
   const result = window.interopResult = { status: 'RUNNING', events: [] }
@@ -7,6 +6,7 @@ window.runWebTorrentInterop = async function (args) {
     result.events.push(name + ' ' + detail)
     console.log('[interop] ' + name, detail)
   }
+  const { default: WebTorrent } = await import(/* webpackMode: "eager" */ 'webtorrent')
   const client = new WebTorrent()
   try {
     client.on('error', err => record('client-error', err && (err.stack || String(err))))
