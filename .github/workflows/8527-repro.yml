@@ -14,9 +14,9 @@ permissions:
 
 jobs:
   reproduce:
-    name: Build and run RTC metadata reproduction
+    name: Browser WebTorrent RTC metadata reproduction
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -24,50 +24,71 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install C++ build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libboost-tools-dev libboost-dev libboost-system-dev libboost-json-dev
-          python3 -m pip install --break-system-packages websockets
           echo "using gcc ;" >> ~/user-config.jam
 
-      - name: Build and run only the RTC WebTorrent transfer test
+      - name: Install browser test dependencies
+        working-directory: test/webtorrent-interop
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          npm run bundle
+
+      - name: Start local WebTorrent tracker
+        working-directory: test/webtorrent-interop
+        run: |
+          node tracker-server.mjs > "$GITHUB_WORKSPACE/tracker.log" 2>&1 &
+          echo $! > "$GITHUB_WORKSPACE/tracker.pid"
+          for i in $(seq 1 100); do
+            if grep -q '\[tracker-listening\]' "$GITHUB_WORKSPACE/tracker.log"; then break; fi
+            sleep 0.2
+          done
+          cat "$GITHUB_WORKSPACE/tracker.log"
+          grep -q '\[tracker-listening\]' "$GITHUB_WORKSPACE/tracker.log"
+
+      - name: Build and run C++ seeder plus browser WebTorrent client
         env:
-          LIBTORRENT_BEP10_LOG: ${{ github.workspace }}/bep10-handshake.log
+          LIBTORRENT_INTEROP_TRACKER: ws://127.0.0.1:19090
+          LIBTORRENT_INTEROP_TORRENT: ${{ github.workspace }}/interop.torrent
+          LIBTORRENT_INTEROP_DONE: ${{ github.workspace }}/interop.done
+          LIBTORRENT_INTEROP_LOG: ${{ github.workspace }}/libtorrent-interop.log
+          LIBTORRENT_INTEROP_JS_LOG: ${{ github.workspace }}/webtorrent-interop.log
         run: |
           set -euxo pipefail
-          pwd
-          command -v b2
-
+          rm -f interop.torrent interop.done libtorrent-interop.log webtorrent-interop.log
           cd test
-          # Force compilation so the TORRENT_USE_RTC guard in the test source
-          # cannot be bypassed by a stale target or an empty/no-op build.
-          b2 -a -d+2 webtorrent=on warnings-as-errors=on debug-iterators=on asserts=on test_webtorrent_transfer
+          b2 -a -d+2 webtorrent=on warnings-as-errors=on debug-iterators=on asserts=on test_webtorrent_interop > "$GITHUB_WORKSPACE/build-test.log" 2>&1 &
+          test_pid=$!
+          set +e
+          cd webtorrent-interop
+          node run-interop.mjs
+          js_status=$?
+          cd ../..
+          wait "$test_pid"
+          test_status=$?
+          set -e
+          cat build-test.log
+          cat libtorrent-interop.log || true
+          cat webtorrent-interop.log || true
+          test "$js_status" -eq 0
+          test "$test_status" -eq 0
 
-          # Search from the repository root: Boost.Build's test runner can use
-          # a target-specific working directory.
-          cd ..
-          log_file=$(find . -type f -name bep10-handshake.log -print -quit)
-          if [ -z "$log_file" ]; then
-            echo "BEP 10 handshake log was not created anywhere in the repository."
-            echo "RTC test build/run diagnostics above should show whether the target ran."
-            find test -maxdepth 7 -type f \( -name '*.log' -o -name 'test_webtorrent_transfer*' \) -print
-            exit 1
-          fi
-          # The test writes directly to the workspace path in CI. Do not cp a
-          # file onto itself; copy only if Boost.Build created a nested log.
-          if [ "$log_file" != "./bep10-handshake.log" ]; then
-            cp "$log_file" ./bep10-handshake.log
-          fi
-          test -s ./bep10-handshake.log
-          echo "Captured BEP 10 log from: $log_file"
-          cat ./bep10-handshake.log
-
-      - name: Upload BEP 10 handshake log
+      - name: Upload interop diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bep10-handshake-log
-          path: bep10-handshake.log
-          if-no-files-found: error
-          retention-days: 14
+          name: issue-8527-browser-webtorrent-interop
+          path: |
+            build-test.log
+            tracker.log
+            libtorrent-interop.log
+            webtorrent-interop.log
+          if-no-files-found: warn
+
+      - name: Stop local tracker
+        if: always()
+        run: |
+          if [ -f tracker.pid ]; then kill "$(cat tracker.pid)" 2>/dev/null || true; fi
