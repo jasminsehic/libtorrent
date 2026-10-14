@@ -7,5 +7,6 @@ await build({
   platform: 'browser',
   format: 'iife',
   outfile: 'client.bundle.js',
+  banner: { js: 'var process = { env: { NODE_ENV: "production" } };' },
   plugins: [nodeModulesPolyfillPlugin()]
 })
