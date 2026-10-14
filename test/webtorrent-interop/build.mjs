@@ -14,7 +14,17 @@ const config = {
   target: 'web',
   resolve: {
     aliasFields: ['browser'],
-    alias: { path: 'path-esm' }
+    alias: { path: require.resolve('path-esm') },
+    fallback: {
+      crypto: require.resolve('crypto-browserify'),
+      stream: require.resolve('stream-browserify'),
+      buffer: require.resolve('buffer/'),
+      process: require.resolve('process/browser'),
+      events: require.resolve('events/'),
+      util: require.resolve('util/'),
+      assert: require.resolve('assert/'),
+      os: require.resolve('os-browserify/browser')
+    }
   },
   output: { path: root, filename: 'client.bundle.js', iife: true },
   plugins: [
