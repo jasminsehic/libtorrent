@@ -1,3 +1,4 @@
+import './polyfills.js'
 import WebTorrent from 'webtorrent'
 
 window.runWebTorrentInterop = async function (args) {
