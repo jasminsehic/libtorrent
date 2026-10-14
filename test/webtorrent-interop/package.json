@@ -11,6 +11,7 @@
     "parse-torrent": "11.0.18",
     "playwright": "1.52.0",
     "webtorrent": "2.4.1",
-    "esbuild-plugins-node-modules-polyfill": "1.7.0"
+    "webpack": "5.92.1",
+    "terser-webpack-plugin": "5.3.10"
   }
 }
