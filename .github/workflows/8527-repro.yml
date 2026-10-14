@@ -1,0 +1,56 @@
+name: Issue 8527 RTC metadata reproduction
+
+on:
+  pull_request:
+    branches:
+      - upstream/RC_2_1-4d092f8
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    name: Build and run RTC metadata reproduction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-tools-dev libboost-dev libboost-system-dev libboost-json-dev
+          python3 -m pip install --break-system-packages websockets
+          echo "using gcc ;" >> ~/user-config.jam
+
+      - name: Build and run only the RTC WebTorrent transfer test
+        run: |
+          cd test
+          b2 webtorrent=on warnings-as-errors=on debug-iterators=on asserts=on test_webtorrent_transfer
+
+          # Boost.Build may execute the test from its target-specific directory.
+          # Collect the log from wherever the test process created it.
+          log_file=$(find . -type f -name bep10-handshake.log -print -quit)
+          if [ -z "$log_file" ]; then
+            echo "BEP 10 handshake log was not created anywhere under test/"
+            find . -maxdepth 5 -type f -name '*.log' -print
+            exit 1
+          fi
+          cp "$log_file" ../bep10-handshake.log
+          test -s ../bep10-handshake.log
+          echo "Captured BEP 10 log from: $log_file"
+          cat ../bep10-handshake.log
+
+      - name: Upload BEP 10 handshake log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bep10-handshake-log
+          path: bep10-handshake.log
+          if-no-files-found: error
+          retention-days: 14
