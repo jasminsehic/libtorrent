@@ -94,12 +94,12 @@ TORRENT_TEST(webtorrent_browser_interop)
 			TEST_CHECK(result == "PASS");
 			TEST_CHECK(rtc_peer);
 			TEST_CHECK(tor.status().is_seeding);
-			ses.abort();
+			session_proxy proxy = ses.abort();
 			return;
 		}
 	}
 	log << "Timed out waiting for browser result; rtc_peer=" << rtc_peer << '\n';
 	log.flush();
 	TEST_CHECK(false);
-	ses.abort();
+	session_proxy proxy = ses.abort();
 }
