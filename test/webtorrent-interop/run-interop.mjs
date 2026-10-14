@@ -31,6 +31,38 @@ try {
   const magnetURI = 'magnet:?xt=urn:btih:' + parsed.infoHash + '&dn=' + encodeURIComponent(parsed.name || 'interop-test') + '&tr=' + encodeURIComponent(tracker)
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
   const page = await browser.newPage()
+  await page.addInitScript(() => {
+    const install = proto => {
+      if (!proto) return
+      if (typeof proto.toHex !== 'function') {
+        Object.defineProperty(proto, 'toHex', {
+          configurable: true,
+          writable: true,
+          value: function toHex() {
+            let hex = ''
+            for (let i = 0; i < this.length; ++i) hex += this[i].toString(16).padStart(2, '0')
+            return hex
+          }
+        })
+      }
+      if (typeof proto.toBase64 !== 'function') {
+        Object.defineProperty(proto, 'toBase64', {
+          configurable: true,
+          writable: true,
+          value: function toBase64(options = {}) {
+            let binary = ''
+            for (let i = 0; i < this.length; ++i) binary += String.fromCharCode(this[i])
+            let encoded = btoa(binary)
+            if (options.alphabet === 'base64url') encoded = encoded.replace(/\\+/g, '-').replace(/\\//g, '_')
+            if (options.omitPadding) encoded = encoded.replace(/=+$/, '')
+            return encoded
+          }
+        })
+      }
+    }
+    install(Uint8Array.prototype)
+    install(Object.getPrototypeOf(new Uint8Array()))
+  })
   page.on('console', msg => log.write('[console:' + msg.type() + '] ' + msg.text() + '\n'))
   page.on('pageerror', err => log.write('[pageerror] ' + (err.stack || err) + '\n'))
   await page.goto('http://127.0.0.1:' + address.port + '/')
