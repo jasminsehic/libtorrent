@@ -32,6 +32,8 @@ jobs:
           echo "using gcc ;" >> ~/user-config.jam
 
       - name: Build and run only the RTC WebTorrent transfer test
+        env:
+          LIBTORRENT_BEP10_LOG: ${{ github.workspace }}/bep10-handshake.log
         run: |
           set -euxo pipefail
           pwd
