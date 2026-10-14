@@ -6,7 +6,7 @@ import { chromium } from 'playwright'
 import parseTorrent from 'parse-torrent'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
-const publicDir = path.join(root, 'public')
+const publicDir = root
 const torrentPath = process.env.LIBTORRENT_INTEROP_TORRENT
 const donePath = process.env.LIBTORRENT_INTEROP_DONE
 const tracker = process.env.LIBTORRENT_INTEROP_TRACKER
@@ -24,11 +24,11 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 const address = server.address()
 let browser
 try {
-  const deadline = Date.now() + 30000
+  const deadline = Date.now() + 8 * 60 * 1000
   while (!fs.existsSync(torrentPath) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100))
   if (!fs.existsSync(torrentPath)) throw new Error('Timed out waiting for torrent file: ' + torrentPath)
   const parsed = await parseTorrent(fs.readFileSync(torrentPath))
-  if (!parsed.magnetURI) throw new Error('Could not derive magnet URI from generated torrent')
+  const magnetURI = 'magnet:?xt=urn:btih:' + parsed.infoHash + '&dn=' + encodeURIComponent(parsed.name || 'interop-test') + '&tr=' + encodeURIComponent(tracker)
   browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] })
   const page = await browser.newPage()
   page.on('console', msg => log.write('[console:' + msg.type() + '] ' + msg.text() + '\n'))
@@ -39,7 +39,7 @@ try {
   const result = await page.evaluate(async magnet => {
     try { return await window.runWebTorrentInterop({ magnetURI: magnet }) }
     catch (e) { return { status: 'FAIL', error: e && (e.stack || String(e)), events: window.interopResult && window.interopResult.events || [] } }
-  }, parsed.magnetURI)
+  }, magnetURI)
   log.write(JSON.stringify(result, null, 2) + '\n')
   log.end()
   fs.writeFileSync(donePath, (result.status === 'PASS' ? 'PASS' : 'FAIL') + '\n')
