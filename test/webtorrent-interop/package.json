@@ -6,6 +6,7 @@
     "bundle": "esbuild client.js --bundle --platform=browser --format=iife --outfile=public/client.bundle.js"
   },
   "devDependencies": {
+    "bittorrent-tracker": "11.2.1",
     "esbuild": "0.25.5",
     "parse-torrent": "11.0.18",
     "playwright": "1.52.0",
