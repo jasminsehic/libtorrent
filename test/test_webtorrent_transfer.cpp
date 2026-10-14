@@ -29,6 +29,7 @@ see LICENSE file.
 #include "settings.hpp"
 #include "test_utils.hpp"
 
+#include <cstdlib>
 #include <fstream>
 
 using namespace lt;
@@ -105,7 +106,10 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 	session_proxy p1;
 	session_proxy p2;
 
-	std::ofstream bep10_log("bep10-handshake.log", std::ios::out | std::ios::app);
+	// The test harness runs each test in a temporary directory and removes it
+	// after the test. Allow CI to place the capture outside that directory.
+	char const* const log_path = std::getenv("LIBTORRENT_BEP10_LOG");
+	std::ofstream bep10_log(log_path ? log_path : "bep10-handshake.log", std::ios::out | std::ios::app);
 	bep10_log << "\n=== Issue #8527 BEP 10 capture: "
 		<< (use_metadata_transfer ? "magnet metadata transfer" : "known metadata control")
 		<< " ===\n";
