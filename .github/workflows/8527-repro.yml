@@ -33,21 +33,30 @@ jobs:
 
       - name: Build and run only the RTC WebTorrent transfer test
         run: |
-          cd test
-          b2 webtorrent=on warnings-as-errors=on debug-iterators=on asserts=on test_webtorrent_transfer
+          set -euxo pipefail
+          pwd
+          command -v b2
+          b2 --version
 
-          # Boost.Build may execute the test from its target-specific directory.
-          # Collect the log from wherever the test process created it.
+          cd test
+          # Force compilation so the TORRENT_USE_RTC guard in the test source
+          # cannot be bypassed by a stale target or an empty/no-op build.
+          b2 -a -d+2 webtorrent=on warnings-as-errors=on debug-iterators=on asserts=on test_webtorrent_transfer
+
+          # Search from the repository root: Boost.Build's test runner can use
+          # a target-specific working directory.
+          cd ..
           log_file=$(find . -type f -name bep10-handshake.log -print -quit)
           if [ -z "$log_file" ]; then
-            echo "BEP 10 handshake log was not created anywhere under test/"
-            find . -maxdepth 5 -type f -name '*.log' -print
+            echo "BEP 10 handshake log was not created anywhere in the repository."
+            echo "RTC test build/run diagnostics above should show whether the target ran."
+            find test -maxdepth 7 -type f \( -name '*.log' -o -name 'test_webtorrent_transfer*' \) -print
             exit 1
           fi
-          cp "$log_file" ../bep10-handshake.log
-          test -s ../bep10-handshake.log
+          cp "$log_file" bep10-handshake.log
+          test -s bep10-handshake.log
           echo "Captured BEP 10 log from: $log_file"
-          cat ../bep10-handshake.log
+          cat bep10-handshake.log
 
       - name: Upload BEP 10 handshake log
         if: always()
