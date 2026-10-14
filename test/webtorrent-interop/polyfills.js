@@ -1,3 +1,5 @@
+import { Buffer } from 'buffer'
+
 // WebTorrent's uint8 utilities use Uint8Array.prototype.toBase64(), which is
 // not available in every Chromium version used by Playwright. Implement the
 // standard API subset needed by WebTorrent before importing its bundle.
@@ -38,3 +40,36 @@ if (typeof Uint8Array.prototype.toHex !== 'function') {
     }
   })
 }
+
+
+function installTypedArrayMethods(proto) {
+  if (!proto) return
+  if (typeof proto.toHex !== 'function') {
+    Object.defineProperty(proto, 'toHex', {
+      configurable: true,
+      writable: true,
+      value: function toHex() {
+        let hex = ''
+        for (let i = 0; i < this.length; ++i) hex += this[i].toString(16).padStart(2, '0')
+        return hex
+      }
+    })
+  }
+  if (typeof proto.toBase64 !== 'function') {
+    Object.defineProperty(proto, 'toBase64', {
+      configurable: true,
+      writable: true,
+      value: function toBase64(options = {}) {
+        let binary = ''
+        for (let i = 0; i < this.length; ++i) binary += String.fromCharCode(this[i])
+        let encoded = btoa(binary)
+        if (options.alphabet === 'base64url') encoded = encoded.replace(/\\+/g, '-').replace(/\\//g, '_')
+        if (options.omitPadding) encoded = encoded.replace(/=+$/, '')
+        return encoded
+      }
+    })
+  }
+}
+
+installTypedArrayMethods(Object.getPrototypeOf(new Uint8Array()))
+installTypedArrayMethods(Buffer.prototype)
