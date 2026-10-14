@@ -9,6 +9,10 @@ see LICENSE file.
 
 #include "libtorrent/config.hpp"
 
+#if !TORRENT_USE_RTC
+#error "test_webtorrent_transfer must be built with webtorrent=on (TORRENT_USE_RTC=1)"
+#endif
+
 #include "test.hpp"
 
 #if TORRENT_USE_RTC
