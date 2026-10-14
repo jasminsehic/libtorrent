@@ -186,18 +186,24 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 		}
 		if (auto const* log = alert_cast<peer_log_alert>(a))
 		{
-			if (log->event_type == peer_log_alert::extended_handshake)
-			{
-				bep10_log << "[BEP10][" << current_session << "]["
-					<< (log->direction == peer_log_alert::incoming_message ? "incoming" : "outgoing")
-					<< "] " << log->log_message() << '\n';
-				bep10_log.flush();
-			}
+			// Capture every peer-log event, not only the extended handshake.
+			// This includes protocol-message activity useful for diagnosing
+			// ut_metadata requests/replies and metadata arrival.
+			bep10_log << "[PEER_LOG][" << current_session << "][event="
+				<< static_cast<int>(log->event_type) << "]["
+				<< (log->direction == peer_log_alert::incoming_message ? "incoming" : "outgoing")
+				<< "] " << log->log_message() << '\n';
 		}
+		// Keep alert text for errors, rejections, timeouts, disconnects, and
+		// metadata events. This focused test has only two peers.
+		bep10_log << "[ALERT][" << current_session << "][type="
+			<< static_cast<int>(a->type()) << "] " << a->message() << '\n';
+		bep10_log.flush();
 		return false;
 	};
 
 	auto const start_time = lt::clock_type::now();
+	auto last_status_log = start_time;
 	while (lt::clock_type::now() - start_time < 30s)
 	{
 		ses2.wait_for_alert(200ms);
@@ -207,10 +213,36 @@ static void test_webtorrent_transfer(bool const use_metadata_transfer)
 		current_session = "ses2";
 		print_alerts(ses2, "ses2", false, false, check_socket_type);
 
+		auto const now = lt::clock_type::now();
+		if (now - last_status_log >= 1s)
+		{
+			auto const status1 = tor1.status();
+			auto const status2 = tor2.status();
+			bep10_log << "[STATUS] elapsed_ms="
+				<< std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count()
+				<< " ses1_state=" << static_cast<int>(status1.state)
+				<< " ses1_seeding=" << status1.is_seeding
+				<< " ses2_state=" << static_cast<int>(status2.state)
+				<< " ses2_seeding=" << status2.is_seeding
+				<< " ses2_progress=" << status2.progress << '\n';
+			bep10_log.flush();
+			last_status_log = now;
+		}
+
 		if (tor2.status().is_seeding) break;
 	}
 
-	TEST_CHECK(tor2.status().is_seeding);
+	auto const final_status1 = tor1.status();
+	auto const final_status2 = tor2.status();
+	bep10_log << "[FINAL_STATUS] ses1_state=" << static_cast<int>(final_status1.state)
+		<< " ses1_seeding=" << final_status1.is_seeding
+		<< " ses2_state=" << static_cast<int>(final_status2.state)
+		<< " ses2_seeding=" << final_status2.is_seeding
+		<< " ses2_progress=" << final_status2.progress
+		<< " rtc_connects=" << rtc_connects << '\n';
+	bep10_log.flush();
+
+	TEST_CHECK(final_status2.is_seeding);
 	// one peer_connect_alert from each session's point of view
 	TEST_CHECK(rtc_connects == 2);
 
