@@ -1,6 +1,9 @@
 name: Issue 8527 RTC metadata reproduction
 
 on:
+  push:
+    branches:
+      - repro/8527-rtc-metadata-size
   pull_request:
     branches:
       - upstream/RC_2_1-4d092f8
