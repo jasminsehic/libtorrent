@@ -1,0 +1,14 @@
+{
+  "name": "libtorrent-webtorrent-interop-test",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle": "esbuild client.js --bundle --platform=browser --format=iife --outfile=public/client.bundle.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.5",
+    "parse-torrent": "11.0.18",
+    "playwright": "1.52.0",
+    "webtorrent": "2.4.1"
+  }
+}
