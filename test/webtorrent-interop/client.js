@@ -32,8 +32,8 @@ window.runWebTorrentInterop = async function (args) {
     ])
     const file = torrent.files.find(f => f.name === 'interop-test.txt')
     if (!file) throw new Error('Expected interop-test.txt; got ' + torrent.files.map(f => f.name).join(','))
-    const data = await new Promise((resolve, reject) => file.getBuffer((err, buffer) => err ? reject(err) : resolve(buffer)))
-    const text = data.toString('utf8')
+    const data = await file.arrayBuffer()
+    const text = new TextDecoder('utf-8').decode(data)
     record('payload', JSON.stringify(text))
     if (text !== 'Test') throw new Error('Payload mismatch: ' + JSON.stringify(text))
     result.status = 'PASS'
