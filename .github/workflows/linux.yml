@@ -248,7 +248,8 @@ jobs:
       strategy:
          matrix:
             include:
-               - config: webtorrent=on address-sanitizer=norecover undefined-sanitizer=norecover crypto=openssl invariant-checks=on
+               # WebTorrent backend coverage is provided by the CMake libnice job below.
+               - config: webtorrent=off address-sanitizer=norecover undefined-sanitizer=norecover crypto=openssl invariant-checks=on
                - config: toolset=clang logging=off address-sanitizer=norecover undefined-sanitizer=norecover invariant-checks=on
                # thread-sanitizer is left off webtorrent: libdatachannel's third-party
                # deps (usrsctp, libjuice) are multi-threaded and not vetted against TSan,
