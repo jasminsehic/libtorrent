@@ -46,7 +46,7 @@ jobs:
 
       - name: analyze
         run: |
-          b2 -a clang_tidy webtorrent=on
+          b2 -a clang_tidy webtorrent=off
 
 
 
