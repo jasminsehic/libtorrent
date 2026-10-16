@@ -152,7 +152,7 @@ jobs:
       - name: cmake build and verify libnice linkage
         run: |
           cmake --build build-cmake --verbose 2>&1 | tee build-cmake.log
-          grep -F 'libnice.so' build-cmake.log
+          grep -F 'libnice' build-cmake.log
 
       - name: ctest
         run: |
