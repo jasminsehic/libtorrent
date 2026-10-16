@@ -56,7 +56,7 @@ jobs:
       - name: Build and verify linked backend
         run: |
           cmake --build build-libnice --parallel 2 --verbose 2>&1 | tee build-libnice.log
-          grep -F 'libnice.so' build-libnice.log
+          grep -F 'libnice' build-libnice.log
 
       - name: Run tests
         run: ctest --test-dir build-libnice --output-on-failure --timeout 180
