@@ -163,8 +163,10 @@ jobs:
         run: |
           cmake -B build-cmake -GNinja -DCMAKE_BUILD_TYPE=Debug -Dbuild_tests=ON -Dbuild_examples=ON -Dbuild_tools=ON -Dwebtorrent=on -DUSE_NICE=ON -Dasserts=on -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"
           grep -q '^USE_NICE:BOOL=ON
-      - name: cmake build
-        run: cmake --build build-cmake
+      - name: cmake build and verify libnice linkage
+        run: |
+          cmake --build build-cmake --verbose 2>&1 | tee build-cmake.log
+          grep -E '(-lnice|libnice\\.dylib)' build-cmake.log
 
       - name: ctest
         run: |
