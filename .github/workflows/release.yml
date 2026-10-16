@@ -45,7 +45,7 @@ jobs:
       - name: install dependencies
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3-docutils python3-pygments python3-pil gsfonts inkscape icoutils graphviz hunspell imagemagick rsync
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libboost-tools-dev libboost-python-dev libboost-dev libboost-system-dev libboost-json-dev python3-setuptools
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libboost-tools-dev libboost-python-dev libboost-dev libboost-system-dev libboost-json-dev libnice-dev python3-setuptools
           python3 -m pip install aafigure
           python3 -m pip install websockets
           echo "using gcc ;" >>~/user-config.jam
@@ -109,7 +109,8 @@ jobs:
           CMAKE_POLICY_VERSION_MINIMUM: 3.5
         run: |
           cd libtorrent-rasterbar-*/
-          cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug -Dbuild_tests=ON -Dbuild_examples=ON -Dbuild_tools=ON -Dwebtorrent=on
+          cmake -B build-cmake -DCMAKE_BUILD_TYPE=Debug -Dbuild_tests=ON -Dbuild_examples=ON -Dbuild_tools=ON -Dwebtorrent=on -DUSE_NICE=ON
+          grep -F 'USE_NICE:BOOL=ON' build-cmake/CMakeCache.txt
           cmake --build build-cmake
 
       - name: test-tarball (ctest)
