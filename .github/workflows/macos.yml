@@ -152,15 +152,76 @@ jobs:
           ccache_options: |
             max_size=1G
 
-      - name: install boost
+      - name: install dependencies
         run: |
-          brew install boost openssl@3 ninja
+          brew install boost openssl@3 ninja libnice
           pip3 install websockets --break-system-packages
           echo "OPENSSL_ROOT=$(brew --prefix openssl@3)" >>"$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix libnice)/lib/pkgconfig:$PKG_CONFIG_PATH" >>"$GITHUB_ENV"
 
-      - name: cmake configure
+      - name: cmake configure (libnice ICE backend)
         run: |
-          cmake -B build-cmake -GNinja -DCMAKE_BUILD_TYPE=Debug -Dbuild_tests=ON -Dbuild_examples=ON -Dbuild_tools=ON -Dwebtorrent=on -Dasserts=on -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"
+          cmake -B build-cmake -GNinja -DCMAKE_BUILD_TYPE=Debug -Dbuild_tests=ON -Dbuild_examples=ON -Dbuild_tools=ON -Dwebtorrent=on -DUSE_NICE=ON -Dasserts=on -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"
+          grep -q '^USE_NICE:BOOL=ON
+      - name: cmake build
+        run: cmake --build build-cmake
+
+      - name: ctest
+        run: |
+          cd build-cmake
+          # test_rtc hangs on macOS specifically when built via cmake (it
+          # passes when built via b2 on the same runner); excluded pending
+          # investigation into the cmake-specific cause
+          #
+          # test_upnp needs to connect to its web_server over the host's LAN
+          # address; macOS's local network privacy permission has no way to
+          # be granted on an unattended CI runner, so it always fails here.
+          # CMakeLists.txt globs all test_*.cpp into ctest unconditionally
+          # (no per-target "explicit" like the b2 Jamfile), so it has to be
+          # excluded here instead.
+          ctest --output-on-failure --exclude-regex '^(test_rtc|test_upnp)$'
+
+
+   ios_build:
+      name: Build iOS
+      runs-on: macos-15
+
+      steps:
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+           submodules: true
+           fetch-depth: 1
+           filter: tree:0
+
+      - name: install boost
+        run: |
+          brew install boost-build boost openssl@3
+
+      - name: user-config
+        run: |
+          echo "using darwin : ios_sim : clang++ : <compileflags>-Wno-deprecated-declarations
+          <compileflags>\"-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk\"
+          <compileflags>-mios-simulator-version-min=12
+          <compileflags>-fobjc-abi-version=2
+          <linkflags>\"-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk\"
+          <linkflags>-mios-simulator-version-min=12
+          <linkflags>-fobjc-abi-version=2 ;" >>~/user-config.jam;
+
+          echo "using darwin : ios : clang++ : <compileflags>-Wno-deprecated-declarations
+          <compileflags>\"-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk\"
+          <compileflags>-mios-version-min=12
+          <compileflags>\"-arch arm64\"
+          <compileflags>-fobjc-abi-version=2
+          <linkflags>\"-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk\"
+          <linkflags>-mios-version-min=12
+          <linkflags>\"-arch arm64\"
+          <linkflags>-fobjc-abi-version=2 ;" >>~/user-config.jam;
+
+      - name: build library
+        run: |
+          b2 -l400 cxxstd=14 target-os=iphone crypto=built-in darwin-ios darwin-ios_sim address-model=64 link=static webtorrent=off
+ build-cmake/CMakeCache.txt
 
       - name: cmake build
         run: cmake --build build-cmake
