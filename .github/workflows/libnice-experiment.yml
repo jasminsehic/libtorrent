@@ -7,7 +7,7 @@ on:
     branches: [ RC_2_1 ]
 
 concurrency:
-  group: ${{ github.ref }}-${{ github.workflow }}-${{ github.event_name }}
+  group: \${{ github.ref }}-\${{ github.workflow }}-\${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -51,17 +51,12 @@ jobs:
             -DUSE_NICE=ON \
             -Dasserts=ON \
             -DCMAKE_CXX_STANDARD=17
-
-      - name: Verify libnice selection
-        run: grep -q '^USE_NICE:BOOL=ON
-      - name: Run tests
-        run: ctest --test-dir build-libnice --output-on-failure --timeout 180
- build-libnice/CMakeCache.txt
+          grep -q '^USE_NICE:BOOL=ON$' build-libnice/CMakeCache.txt
 
       - name: Build and verify linked backend
         run: |
           cmake --build build-libnice --parallel 2 --verbose 2>&1 | tee build-libnice.log
-          grep -E '(-lnice|libnice\\.so)' build-libnice.log
+          grep -E '(-lnice|libnice\.so)' build-libnice.log
 
       - name: Run tests
         run: ctest --test-dir build-libnice --output-on-failure --timeout 180
