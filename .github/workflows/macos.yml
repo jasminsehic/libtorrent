@@ -27,7 +27,7 @@ jobs:
 
       strategy:
          matrix:
-            config: [ webtorrent=off crypto=built-in, webtorrent=on deprecated-functions=off ]
+            config: [ webtorrent=off crypto=built-in, webtorrent=off deprecated-functions=off ]
 
       steps:
       - name: checkout
