@@ -20,10 +20,15 @@ see LICENSE file.
 #include "libtorrent/error_code.hpp"
 #include "libtorrent/aux_/noexcept_movable.hpp"
 
+#include <functional>
+#include <string>
+
 namespace libtorrent::aux {
 
 struct proxy_base
 {
+	using diagnostic_callback = std::function<void(std::string const&, error_code const&)>;
+
 	using next_layer_type = tcp::socket;
 	using lowest_layer_type = tcp::socket::lowest_layer_type;
 	using endpoint_type = tcp::socket::endpoint_type;
