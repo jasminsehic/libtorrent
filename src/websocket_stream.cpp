@@ -173,8 +173,6 @@ void websocket_stream::do_connect(std::string url)
 		return;
 	}
 
-	set_control_callback();
-
 	if (port <= 0) port = protocol == "ws" ? 80 : 443;
 
 	if (!target.empty()) m_target = std::move(target);
@@ -196,20 +194,18 @@ void websocket_stream::do_connect(std::string url)
 
 void websocket_stream::set_control_callback()
 {
+	TORRENT_ASSERT(m_stream);
+
 	auto weak_self = std::weak_ptr<websocket_stream>(shared_from_this());
 
 	// Track pongs to detect connections that silently stop responding.
-	std::visit(
-		[&](auto& stream) {
-			stream.control_callback([weak_self](websocket::frame_type const kind, auto const&) {
-				if (kind != websocket::frame_type::pong)
-					return;
+	m_stream->control_callback([weak_self](websocket::frame_type const kind, auto const&) {
+		if (kind != websocket::frame_type::pong)
+			return;
 
-				if (auto self = weak_self.lock())
-					self->on_pong();
-			});
-		},
-		m_stream);
+		if (auto self = weak_self.lock())
+			self->on_pong();
+	});
 }
 
 void websocket_stream::on_pong() { m_awaiting_pong = false; }
@@ -226,15 +222,14 @@ void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 }
 
 // Bypass the WebSocket close handshake so a silent peer cannot leave the
-// outstanding read pending indefinitely. Select the TCP socket beneath either
-// the plain WebSocket stream or the TLS and WebSocket layers.
+// outstanding read pending indefinitely. Close the underlying proxy-aware
+// transport directly.
 void websocket_stream::terminate_socket()
 {
+	if (!m_stream) return;
+
 	error_code ignore;
-	std::visit(
-		rtc::overloaded{[&](stream_type& stream) { stream.next_layer().close(ignore); },
-			[&](ssl_stream_type& stream) { stream.next_layer().next_layer().close(ignore); }},
-		m_stream);
+	m_stream->next_layer().close(ignore);
 }
 
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
@@ -288,6 +283,9 @@ void websocket_stream::connect_endpoint()
 	}
 	m_stream.reset();
 	m_stream.emplace(std::move(*websocket_socket));
+
+	// The proxy-aware stream must exist before registering WebSocket callbacks.
+	set_control_callback();
 
 	// Configure proxy destination details on the final transport. This mirrors
 	// http_connection::connect(), and ensures SOCKS5 receives the destination
