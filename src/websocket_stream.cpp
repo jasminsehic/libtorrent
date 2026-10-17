@@ -235,6 +235,11 @@ void websocket_stream::terminate_socket()
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
 {
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
+
+	// A cancelled connection must not start connecting after DNS completes.
+	if (!m_connect_handler)
+		return;
+
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
