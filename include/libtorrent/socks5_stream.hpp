@@ -104,6 +104,16 @@ public:
 		if (m_password.size() > 255) m_password.resize(255);
 	}
 
+	void set_diagnostic_callback(aux::proxy_base::diagnostic_callback callback)
+	{
+		m_diagnostic_callback = std::move(callback);
+	}
+
+	void log_diagnostic(std::string const& stage, error_code const& ec) const
+	{
+		if (m_diagnostic_callback) m_diagnostic_callback(stage, ec);
+	}
+
 	void set_dst_name(std::string const& host)
 	{
 		// if this assert trips, set_dst_name() is called with an IP address rather
@@ -139,6 +149,7 @@ public:
 			|| (!m_dst_name.empty() && m_version == 5));
 
 		m_remote_endpoint = endpoint;
+		log_diagnostic("SOCKS proxy: resolving proxy server hostname", error_code{});
 
 		// the connect is split up in the following steps:
 		// 1. resolve name of proxy server
@@ -163,6 +174,7 @@ private:
 		, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::name_lookup");
+		log_diagnostic("SOCKS proxy: proxy hostname resolution", e);
 		if (handle_error(e, std::move(h))) return;
 
 		auto i = ips.begin();
@@ -175,6 +187,7 @@ private:
 
 		// TODO: we could bind the socket here, since we know what the
 		// target endpoint is of the proxy
+		log_diagnostic("SOCKS proxy: connecting TCP socket to proxy", error_code{});
 		ADD_OUTSTANDING_ASYNC("socks5_stream::connected");
 		m_sock.async_connect(i->endpoint(), aux::wrap_allocator(
 			[this](error_code const& ec, Handler hn)
@@ -185,6 +198,7 @@ private:
 	void connected(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::connected");
+		log_diagnostic("SOCKS proxy: TCP connection to proxy completed", e);
 		if (handle_error(e, std::move(h))) return;
 
 		using namespace libtorrent::aux;
@@ -205,6 +219,7 @@ private:
 				write_uint8(0, p); // no authentication
 				write_uint8(2, p); // username/password
 			}
+			log_diagnostic("SOCKS5: sending authentication-method selection", error_code{});
 			ADD_OUTSTANDING_ASYNC("socks5_stream::handshake1");
 			async_write(m_sock, boost::asio::buffer(m_buffer), aux::wrap_allocator(
 				[this](error_code const& ec, std::size_t, Handler hn) {
@@ -225,6 +240,7 @@ private:
 	void handshake1(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::handshake1");
+		log_diagnostic("SOCKS5: authentication-method selection write", e);
 		if (handle_error(e, std::move(h))) return;
 
 		ADD_OUTSTANDING_ASYNC("socks5_stream::handshake2");
@@ -239,6 +255,7 @@ private:
 	void handshake2(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::handshake2");
+		log_diagnostic("SOCKS5: authentication-method response", e);
 		if (handle_error(e, std::move(h))) return;
 
 		using namespace libtorrent::aux;
@@ -255,10 +272,12 @@ private:
 
 		if (method == 0)
 		{
+			log_diagnostic("SOCKS5: proxy selected no authentication", error_code{});
 			socks_connect(std::move(h));
 		}
 		else if (method == 2)
 		{
+			log_diagnostic("SOCKS5: proxy selected username/password authentication", error_code{});
 			if (m_user.empty())
 			{
 				std::move(h)(error_code(socks_error::username_required));
@@ -293,6 +312,7 @@ private:
 	void handshake3(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::handshake3");
+		log_diagnostic("SOCKS5: username/password authentication request write", e);
 		if (handle_error(e, std::move(h))) return;
 
 		ADD_OUTSTANDING_ASYNC("socks5_stream::handshake4");
@@ -307,6 +327,7 @@ private:
 	void handshake4(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::handshake4");
+		log_diagnostic("SOCKS5: username/password authentication response", e);
 		if (handle_error(e, std::move(h))) return;
 
 		using namespace libtorrent::aux;
@@ -323,10 +344,12 @@ private:
 
 		if (status != 0)
 		{
+			log_diagnostic("SOCKS5: username/password authentication rejected", socks_error::authentication_error);
 			std::move(h)(error_code(socks_error::authentication_error));
 			return;
 		}
 
+		log_diagnostic("SOCKS5: username/password authentication accepted", error_code{});
 		std::vector<char>().swap(m_buffer);
 		socks_connect(std::move(h));
 	}
@@ -393,6 +416,7 @@ private:
 			return;
 		}
 
+		log_diagnostic(m_version == 5 ? "SOCKS5: sending CONNECT request" : "SOCKS4: sending CONNECT request", error_code{});
 		ADD_OUTSTANDING_ASYNC("socks5_stream::connect1");
 		async_write(m_sock, boost::asio::buffer(m_buffer), aux::wrap_allocator(
 			[this](error_code const& ec, std::size_t, Handler hn) {
@@ -404,6 +428,7 @@ private:
 	void connect1(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::connect1");
+		log_diagnostic("SOCKS proxy: CONNECT request write completed", e);
 		if (handle_error(e, std::move(h))) return;
 
 		if (m_version == 5)
@@ -422,6 +447,7 @@ private:
 	void connect2(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::connect2");
+		log_diagnostic("SOCKS proxy: CONNECT response", e);
 		if (handle_error(e, std::move(h))) return;
 
 		using namespace libtorrent::aux;
@@ -439,6 +465,7 @@ private:
 			}
 			if (response != 0)
 			{
+				log_diagnostic("SOCKS5: CONNECT request rejected by proxy (response=" + std::to_string(response) + ")", socks_error::general_failure);
 				error_code ec(socks_error::general_failure);
 				switch (response)
 				{
@@ -486,6 +513,7 @@ private:
 
 			if (extra_bytes == 0)
 			{
+				log_diagnostic("SOCKS5: CONNECT tunnel established", error_code{});
 				std::vector<char>().swap(m_buffer);
 				std::move(h)(e);
 				return;
@@ -530,6 +558,7 @@ private:
 	void connect3(error_code const& e, Handler h)
 	{
 		COMPLETE_ASYNC("socks5_stream::connect3");
+		log_diagnostic("SOCKS5: CONNECT response address completion", e);
 		using namespace libtorrent::aux;
 
 		if (handle_error(e, std::move(h))) return;
@@ -544,6 +573,7 @@ private:
 	std::string m_user;
 	std::string m_password;
 	std::string m_dst_name;
+	aux::proxy_base::diagnostic_callback m_diagnostic_callback;
 
 	int m_version;
 
