@@ -114,6 +114,20 @@ struct ssl_stream
 			}, std::move(h)));
 	}
 
+	// Perform the client TLS handshake separately from the underlying
+	// transport connect. This lets callers distinguish proxy negotiation
+	// errors from TLS handshake errors.
+	template <class Handler>
+	void async_handshake(Handler h)
+	{
+		if (!m_sock)
+			aux::throw_ex<system_error>(make_error_code(boost::system::errc::bad_file_descriptor));
+		m_sock->async_handshake(ssl::stream_base::client, wrap_allocator(
+			[this](error_code const& ec, Handler hn) {
+				handshake(ec, std::move(hn));
+			}, std::move(h)));
+	}
+
 	void accept_handshake(error_code& ec)
 	{
 		if (!m_sock)
@@ -414,10 +428,7 @@ private:
 			return;
 		}
 
-		m_sock->async_handshake(ssl::stream_base::client, wrap_allocator(
-			[this](error_code const& ec, Handler hn) {
-				handshake(ec, std::move(hn));
-			}, std::move(h)));
+		async_handshake(std::move(h));
 	}
 
 	template <typename Handler>
