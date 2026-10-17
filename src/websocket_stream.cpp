@@ -42,6 +42,53 @@ using namespace std::chrono_literals;
 
 namespace {
 
+template <typename T>
+struct is_websocket_ssl_transport : std::false_type
+{};
+
+#if TORRENT_USE_SSL
+template <typename T>
+struct is_websocket_ssl_transport<ssl_stream<T>> : std::true_type
+{};
+#endif
+
+char const* websocket_transport_name(std::size_t const index)
+{
+	switch (index)
+	{
+		case 0: return "TCP";
+		case 1: return "SOCKS";
+		case 2: return "HTTP CONNECT";
+#if TORRENT_USE_SSL
+		case 3: return "TLS over TCP";
+		case 4: return "TLS over SOCKS";
+		case 5: return "TLS over HTTP CONNECT";
+#endif
+		default: return "unknown";
+	}
+}
+
+void set_proxy_diagnostics(websocket_socket_type& socket,
+	proxy_base::diagnostic_callback const& diagnostics)
+{
+	if (!diagnostics) return;
+	std::visit([&](auto& stream) {
+		using stream_type = std::decay_t<decltype(stream)>;
+		if constexpr (std::is_same_v<stream_type, socks5_stream>
+			|| std::is_same_v<stream_type, http_stream>)
+		{
+			stream.set_diagnostic_callback(diagnostics);
+		}
+#if TORRENT_USE_SSL
+		else if constexpr (std::is_same_v<stream_type, ssl_stream<socks5_stream>>
+			|| std::is_same_v<stream_type, ssl_stream<http_stream>>)
+		{
+			stream.next_layer().set_diagnostic_callback(diagnostics);
+		}
+#endif
+	}, socket.var());
+}
+
 std::optional<websocket_socket_type> make_websocket_socket(socket_type& socket)
 {
 	return std::visit(
@@ -93,15 +140,22 @@ void setup_websocket_ssl_hostname(
 
 websocket_stream::websocket_stream(
 	io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx)
-	: websocket_stream(ios, resolver, ssl_ctx, proxy_settings{})
+	: websocket_stream(ios, resolver, ssl_ctx, proxy_settings{}, {})
 {}
 
 websocket_stream::websocket_stream(
 	io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx, proxy_settings proxy)
+	: websocket_stream(ios, resolver, ssl_ctx, std::move(proxy), {})
+{}
+
+websocket_stream::websocket_stream(
+	io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx,
+	proxy_settings proxy, diagnostic_callback diagnostics)
 	: m_io_service(ios)
 	, m_resolver(resolver)
 	, m_ssl_context(ssl_ctx)
 	, m_proxy(std::move(proxy))
+	, m_diagnostics(std::move(diagnostics))
 	, m_open(false)
 	, m_keepalive_timer(ios)
 {
@@ -110,6 +164,8 @@ websocket_stream::websocket_stream(
 
 void websocket_stream::close()
 {
+	log_stage("close requested (connecting=" + std::string(m_connect_handler ? "yes" : "no")
+		+ ", open=" + (m_open ? "yes" : "no") + ")", error_code{});
 	if (auto handler = std::exchange(m_connect_handler, nullptr))
 	{
 		post(m_io_service, std::bind(std::move(handler), error::operation_aborted));
@@ -138,6 +194,11 @@ void websocket_stream::set_user_agent(std::string user_agent)
 	m_user_agent = std::move(user_agent);
 }
 
+void websocket_stream::log_stage(std::string const& stage, error_code const& ec) const
+{
+	if (m_diagnostics) m_diagnostics(stage, ec);
+}
+
 void websocket_stream::do_connect(std::string url)
 {
 	if (m_open)
@@ -154,6 +215,7 @@ void websocket_stream::do_connect(std::string url)
 	TORRENT_UNUSED(_ignored);
 	if (ec)
 	{
+		log_stage("tracker URL parsing failed", ec);
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
 			post(m_io_service, std::bind(std::move(handler), ec));
 		return;
@@ -161,6 +223,7 @@ void websocket_stream::do_connect(std::string url)
 
 	if (protocol != "ws" && protocol != "wss")
 	{
+		log_stage("unsupported WebSocket tracker protocol", error::no_protocol_option);
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
 			post(m_io_service, std::bind(std::move(handler), error::no_protocol_option));
 		return;
@@ -168,6 +231,7 @@ void websocket_stream::do_connect(std::string url)
 
 	if (protocol == "wss" && !m_ssl_context)
 	{
+		log_stage("WSS requested but TLS support/context is unavailable", error::no_protocol_option);
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
 			post(m_io_service, std::bind(std::move(handler), error::no_protocol_option));
 		return;
@@ -182,10 +246,18 @@ void websocket_stream::do_connect(std::string url)
 	m_port = std::uint16_t(port);
 
 	bool const use_proxy = m_proxy.type != settings_pack::none && m_proxy.proxy_tracker_connections;
+	log_stage("starting " + protocol + " connection to " + m_hostname + ":" + std::to_string(m_port)
+		+ " (proxy type=" + std::to_string(int(m_proxy.type))
+		+ ", proxy_tracker_connections=" + (m_proxy.proxy_tracker_connections ? "true" : "false")
+		+ ", proxy_hostnames=" + (m_proxy.proxy_hostnames ? "true" : "false")
+		+ ", send_host_in_connect=" + (m_proxy.send_host_in_connect ? "true" : "false")
+		+ ", proxy=" + m_proxy.hostname + ":" + std::to_string(m_proxy.port) + ")", error_code{});
 	m_remote_dns = use_proxy && m_proxy.proxy_hostnames && !is_ip_address(m_hostname)
 		&& (m_proxy.type == settings_pack::socks5 || m_proxy.type == settings_pack::socks5_pw
 			|| m_proxy.type == settings_pack::http || m_proxy.type == settings_pack::http_pw);
 
+	log_stage(std::string("hostname resolution mode: ")
+		+ (m_remote_dns ? "proxy-side" : "local") + (use_proxy ? " (proxy enabled)" : " (direct)"), error_code{});
 	if (m_remote_dns)
 		do_tcp_connect({tcp::endpoint(address(), m_port)});
 	else
@@ -212,6 +284,7 @@ void websocket_stream::on_pong() { m_awaiting_pong = false; }
 
 void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 {
+	log_stage("starting local DNS resolution for tracker hostname", error_code{});
 	m_hostname = std::move(hostname);
 	m_port = std::move(port);
 
@@ -238,7 +311,15 @@ void websocket_stream::on_resolve(error_code const& ec, std::vector<address> con
 
 	// A cancelled connection must not start connecting after DNS completes.
 	if (!m_connect_handler)
+	{
+		log_stage("ignoring late DNS completion after cancellation", ec);
 		return;
+	}
+
+	if (ec)
+		log_stage("local DNS resolution failed", ec);
+	else
+		log_stage("local DNS resolution completed (" + std::to_string(addresses.size()) + " address(es))", error_code{});
 
 	if (ec)
 	{
@@ -289,6 +370,11 @@ void websocket_stream::connect_endpoint()
 	m_stream.reset();
 	m_stream.emplace(std::move(*websocket_socket));
 
+	log_stage("created transport type " + std::string(websocket_transport_name(m_stream->next_layer().var().index()))
+		+ " for endpoint attempt " + std::to_string(m_endpoint_index + 1)
+		+ "/" + std::to_string(m_endpoints.size()), error_code{});
+	set_proxy_diagnostics(m_stream->next_layer(), m_diagnostics);
+
 	// The proxy-aware stream must exist before registering WebSocket callbacks.
 	set_control_callback();
 
@@ -323,19 +409,38 @@ void websocket_stream::connect_endpoint()
 	setup_websocket_ssl_hostname(m_stream->next_layer(), m_hostname, ssl_ec);
 	if (ssl_ec)
 	{
+		log_stage("TLS hostname/SNI configuration failed", ssl_ec);
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
 			post(m_io_service, std::bind(std::move(handler), ssl_ec));
 		return;
 	}
 
+	log_stage("starting TCP/proxy transport connection to endpoint " 
+		+ m_endpoints[m_endpoint_index].address().to_string() + ":" 
+		+ std::to_string(m_endpoints[m_endpoint_index].port()), error_code{});
 	ADD_OUTSTANDING_ASYNC("websocket_stream::on_tcp_connect");
-	m_stream->next_layer().async_connect(m_endpoints[m_endpoint_index],
-		std::bind(&websocket_stream::on_tcp_connect, shared_from_this(), _1));
+	auto self = shared_from_this();
+	std::visit([&](auto& stream) {
+		using stream_type = std::decay_t<decltype(stream)>;
+		if constexpr (is_websocket_ssl_transport<stream_type>::value)
+		{
+			// Separate the proxy/tcp negotiation from TLS so the logs identify
+			// which stage produced an error.
+			stream.next_layer().async_connect(m_endpoints[m_endpoint_index],
+				std::bind(&websocket_stream::on_tcp_connect, self, _1));
+		}
+		else
+		{
+			stream.async_connect(m_endpoints[m_endpoint_index],
+				std::bind(&websocket_stream::on_tcp_connect, self, _1));
+		}
+	}, m_stream->next_layer().var());
 }
 
 void websocket_stream::on_tcp_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
+	log_stage("TCP/proxy transport connection completed", ec);
 
 	// close() clears m_connect_handler. Don't retry or start the WebSocket
 	// handshake after the caller has cancelled connection establishment.
@@ -371,6 +476,50 @@ void websocket_stream::on_tcp_connect(error_code const& ec)
 		return;
 	}
 
+	bool const needs_tls = std::visit([](auto& stream) {
+		using stream_type = std::decay_t<decltype(stream)>;
+		return is_websocket_ssl_transport<stream_type>::value;
+	}, m_stream->next_layer().var());
+	if (needs_tls)
+	{
+		log_stage("starting TLS client handshake", error_code{});
+		ADD_OUTSTANDING_ASYNC("websocket_stream::on_ssl_handshake");
+		std::visit([&](auto& stream) {
+			using stream_type = std::decay_t<decltype(stream)>;
+			if constexpr (is_websocket_ssl_transport<stream_type>::value)
+				stream.async_handshake(std::bind(&websocket_stream::on_ssl_handshake, shared_from_this(), _1));
+		}, m_stream->next_layer().var());
+		return;
+	}
+
+	log_stage("starting WebSocket HTTP Upgrade handshake", error_code{});
+	do_handshake();
+}
+
+void websocket_stream::on_ssl_handshake(error_code const& ec)
+{
+	COMPLETE_ASYNC("websocket_stream::on_ssl_handshake");
+	log_stage("TLS client handshake completed", ec);
+
+	if (!m_connect_handler)
+	{
+		auto self = shared_from_this();
+		post(m_io_service, [self] {
+			if (!self->m_connect_handler && self->m_stream)
+			{
+				error_code close_ec;
+				self->m_stream->next_layer().close(close_ec);
+			}
+		});
+		return;
+	}
+	if (ec)
+	{
+		if (auto handler = std::exchange(m_connect_handler, nullptr))
+			post(m_io_service, std::bind(std::move(handler), ec));
+		return;
+	}
+	log_stage("starting WebSocket HTTP Upgrade handshake", error_code{});
 	do_handshake();
 }
 
@@ -386,6 +535,7 @@ void websocket_stream::do_handshake()
 	if ((!is_ssl && m_port != 80) || (is_ssl && m_port != 443))
 		host += std::string(":") + std::to_string(m_port);
 
+	log_stage("sending WebSocket HTTP Upgrade request", error_code{});
 	ADD_OUTSTANDING_ASYNC("websocket_stream::on_handshake");
 #if BOOST_VERSION >= 107000
 	m_stream->set_option(websocket::stream_base::decorator(user_agent_handler));
@@ -402,6 +552,7 @@ void websocket_stream::do_handshake()
 void websocket_stream::on_handshake(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_handshake");
+	log_stage("WebSocket HTTP Upgrade handshake completed", ec);
 	auto handler = std::exchange(m_connect_handler, nullptr);
 	if (ec)
 	{
@@ -421,6 +572,7 @@ void websocket_stream::on_handshake(error_code const& ec)
 void websocket_stream::on_read(error_code ec, std::size_t bytes_read, read_handler handler)
 {
 	COMPLETE_ASYNC("websocket_stream::on_read");
+	if (ec) log_stage("WebSocket read failed", ec);
 
 	if (ec) m_open = false;
 	// anything received proves the connection is still alive
@@ -450,6 +602,7 @@ void websocket_stream::on_keepalive(error_code ec)
 
 	if (m_awaiting_pong)
 	{
+		log_stage("keepalive ping timed out; terminating WebSocket transport", error::timed_out);
 		terminate_socket();
 		return;
 	}
@@ -462,6 +615,7 @@ void websocket_stream::on_keepalive(error_code ec)
 void websocket_stream::on_ping(error_code ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_ping");
+	log_stage("WebSocket ping write completed", ec);
 
 	if (ec) return;
 
