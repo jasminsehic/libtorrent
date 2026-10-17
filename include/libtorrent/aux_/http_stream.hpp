@@ -202,7 +202,10 @@ private:
 			auto const code = parse_decimal({status, status_len});
 			if (!code || *code != 200)
 			{
-				log_diagnostic("HTTP proxy: CONNECT response status was not 200", boost::asio::error::operation_not_supported);
+				std::string status_message = "HTTP proxy: CONNECT response status ";
+				status_message += code ? std::to_string(*code) : "invalid";
+				status_message += " (expected 200)";
+				log_diagnostic(status_message, boost::asio::error::operation_not_supported);
 				h(boost::asio::error::operation_not_supported);
 				error_code ec;
 				close(ec);
