@@ -164,9 +164,13 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 	using read_handler = std::function<void(error_code const&, std::size_t)>;
 	using write_handler = std::function<void(error_code const&, std::size_t)>;
 
+	using diagnostic_callback = proxy_base::diagnostic_callback;
+
 	websocket_stream(io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx);
 	websocket_stream(
 		io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx, proxy_settings proxy);
+	websocket_stream(io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx,
+		proxy_settings proxy, diagnostic_callback diagnostics);
 
 	~websocket_stream() = default;
 	websocket_stream& operator=(websocket_stream const&) = delete;
@@ -250,6 +254,7 @@ private:
 	void do_tcp_connect(std::vector<tcp::endpoint> endpoints);
 	void connect_endpoint();
 	void on_tcp_connect(error_code const& ec);
+	void on_ssl_handshake(error_code const& ec);
 	void do_handshake();
 	void on_handshake(error_code const& ec);
 	void on_read(error_code ec, std::size_t bytes_read, read_handler handler);
@@ -262,11 +267,13 @@ private:
 	void terminate_socket();
 	void set_control_callback();
 	void on_pong();
+	void log_stage(std::string const& stage, error_code const& ec) const;
 
 	io_context& m_io_service;
 	resolver_interface& m_resolver;
 	ssl::context* m_ssl_context;
 	proxy_settings m_proxy;
+	diagnostic_callback m_diagnostics;
 
 	using stream_type = websocket::stream<websocket_socket_type>;
 	std::optional<stream_type> m_stream;
