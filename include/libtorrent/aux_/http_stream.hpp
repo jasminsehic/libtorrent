@@ -229,6 +229,7 @@ private:
 	std::string m_user;
 	std::string m_password;
 	std::string m_host;
+	diagnostic_callback m_diagnostic_callback;
 
 	// this is true if the connection is HTTP based and
 	// want to talk directly to the proxy
