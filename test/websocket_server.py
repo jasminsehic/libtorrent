@@ -27,6 +27,8 @@ async def handle(websocket):
     # bare-failure: inject a failure response without an info_hash, then send
     #   a normal, correlated response on the same connection. Tests that the
     #   client ignores the uncorrelated failure without closing the connection.
+    # peer-id-close: accept announces from the first peer_id on each connection;
+    #   reject and close the connection when a different peer_id is observed.
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
 
     try:
@@ -41,6 +43,23 @@ async def handle(websocket):
 
             request = json.loads(message)
             info_hash = request["info_hash"]
+            peer_id = request.get("peer_id", "<missing>")
+
+            if mode == 'peer-id-close':
+                if not hasattr(websocket, "accepted_peer_id"):
+                    websocket.accepted_peer_id = peer_id
+                    print("[peer-id-close] ACCEPT connection={} peer_id={} info_hash={}".format(
+                        websocket.remote_address, peer_id, info_hash), flush=True)
+                elif peer_id != websocket.accepted_peer_id:
+                    print("[peer-id-close] REJECT connection={} accepted_peer_id={} "
+                        "received_peer_id={} info_hash={} action=close".format(
+                            websocket.remote_address, websocket.accepted_peer_id,
+                            peer_id, info_hash), flush=True)
+                    await websocket.close(code=1008, reason="peer_id changed on shared connection")
+                    return
+                else:
+                    print("[peer-id-close] ACCEPT-SAME connection={} peer_id={} info_hash={}".format(
+                        websocket.remote_address, peer_id, info_hash), flush=True)
 
             if mode == 'failure':
                 await websocket.send(json.dumps({
