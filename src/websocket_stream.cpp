@@ -415,26 +415,29 @@ void websocket_stream::connect_endpoint()
 		return;
 	}
 
-	log_stage("starting TCP/proxy transport connection to endpoint " 
-		+ m_endpoints[m_endpoint_index].address().to_string() + ":" 
-		+ std::to_string(m_endpoints[m_endpoint_index].port()), error_code{});
+	log_stage("starting TCP/proxy transport connection to endpoint "
+			+ m_endpoints[m_endpoint_index].address().to_string() + ":"
+			+ std::to_string(m_endpoints[m_endpoint_index].port()),
+		error_code{});
 	ADD_OUTSTANDING_ASYNC("websocket_stream::on_tcp_connect");
 	auto self = shared_from_this();
-	std::visit([&](auto& stream) {
-		using stream_type = std::decay_t<decltype(stream)>;
-		if constexpr (is_websocket_ssl_transport<stream_type>::value)
-		{
-			// Separate the proxy/tcp negotiation from TLS so the logs identify
-			// which stage produced an error.
-			stream.next_layer().async_connect(m_endpoints[m_endpoint_index],
-				std::bind(&websocket_stream::on_tcp_connect, self, _1));
-		}
-		else
-		{
-			stream.async_connect(m_endpoints[m_endpoint_index],
-				std::bind(&websocket_stream::on_tcp_connect, self, _1));
-		}
-	}, m_stream->next_layer().var());
+	std::visit(
+		[&](auto& stream) {
+			using transport_type = std::decay_t<decltype(stream)>;
+			if constexpr (is_websocket_ssl_transport<transport_type>::value)
+			{
+				// Separate the proxy/tcp negotiation from TLS so the logs identify
+				// which stage produced an error.
+				stream.next_layer().async_connect(m_endpoints[m_endpoint_index],
+					std::bind(&websocket_stream::on_tcp_connect, self, _1));
+			}
+			else
+			{
+				stream.async_connect(m_endpoints[m_endpoint_index],
+					std::bind(&websocket_stream::on_tcp_connect, self, _1));
+			}
+		},
+		m_stream->next_layer().var());
 }
 
 void websocket_stream::on_tcp_connect(error_code const& ec)
@@ -476,19 +479,24 @@ void websocket_stream::on_tcp_connect(error_code const& ec)
 		return;
 	}
 
-	bool const needs_tls = std::visit([](auto& stream) {
-		using stream_type = std::decay_t<decltype(stream)>;
-		return is_websocket_ssl_transport<stream_type>::value;
-	}, m_stream->next_layer().var());
+	bool const needs_tls = std::visit(
+		[](auto& stream) {
+			using transport_type = std::decay_t<decltype(stream)>;
+			return is_websocket_ssl_transport<transport_type>::value;
+		},
+		m_stream->next_layer().var());
 	if (needs_tls)
 	{
 		log_stage("starting TLS client handshake", error_code{});
 		ADD_OUTSTANDING_ASYNC("websocket_stream::on_ssl_handshake");
-		std::visit([&](auto& stream) {
-			using stream_type = std::decay_t<decltype(stream)>;
-			if constexpr (is_websocket_ssl_transport<stream_type>::value)
-				stream.async_handshake(std::bind(&websocket_stream::on_ssl_handshake, shared_from_this(), _1));
-		}, m_stream->next_layer().var());
+		std::visit(
+			[&](auto& stream) {
+				using transport_type = std::decay_t<decltype(stream)>;
+				if constexpr (is_websocket_ssl_transport<transport_type>::value)
+					stream.async_handshake(
+						std::bind(&websocket_stream::on_ssl_handshake, shared_from_this(), _1));
+			},
+			m_stream->next_layer().var());
 		return;
 	}
 
