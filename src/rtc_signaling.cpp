@@ -339,7 +339,10 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 			if (pc_->gatheringState() != rtc::PeerConnection::GatheringState::Complete)
 				complete_description(ec, "");
 
-			post(self->m_io_context, std::bind(&rtc_signaling::on_data_channel
+			// Capture the context before moving self: function argument evaluation
+			// order would otherwise allow std::bind() to move self first.
+			auto& io_context = self->m_io_context;
+			post(io_context, std::bind(&rtc_signaling::on_data_channel
 				, std::move(self)
 				, ec
 				, std::move(offer_id)
