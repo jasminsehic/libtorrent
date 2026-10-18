@@ -997,14 +997,15 @@ lt::settings_pack websocket_tracker_settings()
 }
 
 torrent_handle add_websocket_tracker_torrent(
-	lt::session& s, char const* save_path, std::string const& tracker_url)
+	lt::session& s, char const* save_path, std::string const& tracker_url
+	, char const* torrent_name = "temporary")
 {
 	error_code ec;
 	remove_all(save_path, ec);
 	create_directory(save_path, ec);
 
 	std::ofstream file(combine_path(save_path, "temporary").c_str());
-	add_torrent_params addp = ::create_torrent(&file, "temporary", 16 * 1024, 13, false);
+	add_torrent_params addp = ::create_torrent(&file, torrent_name, 16 * 1024, 13, false);
 	file.close();
 
 	addp.trackers.push_back(tracker_url);
@@ -1021,6 +1022,82 @@ std::string websocket_tracker_url(int const port)
 }
 
 } // anonymous namespace
+
+// Reproduce trackers that bind a WebSocket connection to the first peer_id
+// seen on it. A second torrent announcing with a different peer_id causes the
+// mock tracker to reject the request and close that connection. Keep all
+// diagnostics in the test output so CI logs are sufficient to inspect failures.
+TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
+{
+	int const port = start_websocket_server(false, 30, "peer-id-close");
+	{
+		lt::session s(websocket_tracker_settings());
+		auto const url = websocket_tracker_url(port);
+		auto const first = add_websocket_tracker_torrent(
+			s, "tmp_ws_peer_id_first", url, "first-torrent");
+		auto const second = add_websocket_tracker_torrent(
+			s, "tmp_ws_peer_id_second", url, "second-torrent");
+		auto const third = add_websocket_tracker_torrent(
+			s, "tmp_ws_peer_id_third", url, "third-torrent");
+
+		int first_replies = 0;
+		int second_replies = 0;
+		int third_replies = 0;
+		int first_errors = 0;
+		int second_errors = 0;
+		int third_errors = 0;
+		int other_tracker_alerts = 0;
+		auto const end = clock_type::now() + seconds(8);
+		std::vector<alert*> alerts;
+		while (clock_type::now() < end)
+		{
+			s.wait_for_alert(end - clock_type::now());
+			s.pop_alerts(&alerts);
+			for (auto const* a : alerts)
+			{
+				std::printf("[peer-id-close-test] %s: %s\n"
+					, a->what(), a->message().c_str());
+				if (auto const* reply = alert_cast<tracker_reply_alert>(a))
+				{
+					if (reply->handle == first) ++first_replies;
+					else if (reply->handle == second) ++second_replies;
+					else if (reply->handle == third) ++third_replies;
+					else ++other_tracker_alerts;
+				}
+				if (auto const* err = alert_cast<tracker_error_alert>(a))
+				{
+					if (err->handle == first) ++first_errors;
+					else if (err->handle == second) ++second_errors;
+					else if (err->handle == third) ++third_errors;
+					else ++other_tracker_alerts;
+				}
+			}
+		}
+
+		std::printf("[peer-id-close-test] summary: first replies=%d errors=%d; "
+			"second replies=%d errors=%d; third replies=%d errors=%d; other=%d\n"
+			, first_replies, first_errors, second_replies, second_errors
+			, third_replies, third_errors, other_tracker_alerts);
+		for (auto const& item : std::array<std::pair<char const*, torrent_handle>, 3>{{
+			{"first", first}, {"second", second}, {"third", third}}})
+		{
+			auto const st = item.second.status();
+			std::printf("[peer-id-close-test] torrent=%s tracker=%s next_announce_ms=%lld "
+				"errc=%s announcing_to_trackers=%d\n"
+				, item.first, st.current_tracker.c_str()
+				, static_cast<long long>(duration_cast<milliseconds>(st.next_announce).count())
+				, st.errc.message().c_str(), int(st.announcing_to_trackers));
+		}
+
+		// The purpose of this test is to establish the observable result of the
+		// peer-id rejection, not to encode a particular failure mode as correct.
+		// The per-torrent alert counts and server-side close reason above show
+		// whether the unaffected announce succeeds and whether rejected announces
+		// are completed with errors or remain uncompleted.
+		TEST_CHECK(first_replies + second_replies + third_replies > 0);
+	}
+	stop_websocket_server();
+}
 
 // a failure reason in response to an announce is reported as a tracker error
 // (it used to leave the announce pending, i.e. "updating", forever)
