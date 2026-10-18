@@ -1022,34 +1022,55 @@ std::string websocket_tracker_url(int const port)
 
 } // anonymous namespace
 
-// Verify that stale-connection detection lets the tracker manager establish a
-// fresh WebSocket connection and complete subsequent announces.
-TORRENT_TEST(websocket_tracker_recovers_after_stale_connection)
+// Missing pongs must cause stale-connection recovery.
+TORRENT_TEST(websocket_tracker_recovers_when_pongs_stop)
 {
 	int const port = start_websocket_server(false, 30, "reconnect");
 	{
 		lt::session s(websocket_tracker_settings());
 		torrent_handle const h = add_websocket_tracker_torrent(
-			s, "tmp_websocket_reconnect_tracker", websocket_tracker_url(port));
+			s, "tmp_websocket_no_pong_tracker", websocket_tracker_url(port));
 
 		auto const initial = count_tracker_alerts(s, seconds(5));
 		TEST_EQUAL(initial.replies, 2);
 		TEST_EQUAL(initial.errors, 0);
 
-		// The server stops answering pings on the first connection. With the
-		// default 10-second keepalive, stale detection closes it after the
-		// unanswered ping remains outstanding for another keepalive period.
+		// The first connection stops answering pings and ignores later announces.
 		auto const stale_wait = count_tracker_alerts(s, seconds(22));
+		TEST_EQUAL(stale_wait.replies, 0);
 		TEST_EQUAL(stale_wait.errors, 0);
 
-		// The replacement connection delays one announce response by 22 seconds.
-		// Keep that request pending across two keepalive intervals to verify that
-		// successful pong responses prevent the connection from being marked stale.
 		h.force_reannounce(0, torrent_handle::ignore_min_interval | torrent_handle::high_priority);
 
-		auto const recovered = count_tracker_alerts(s, seconds(30));
+		// Successful replies now require a replacement connection.
+		auto const recovered = count_tracker_alerts(s, seconds(5));
 		TEST_EQUAL(recovered.replies, 2);
 		TEST_EQUAL(recovered.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// Pongs must keep a connection alive while an announce response is delayed.
+TORRENT_TEST(websocket_tracker_pongs_keep_delayed_announce_alive)
+{
+	int const port = start_websocket_server(false, 30, "pong");
+	{
+		lt::session s(websocket_tracker_settings());
+		torrent_handle const h = add_websocket_tracker_torrent(
+			s, "tmp_websocket_pong_tracker", websocket_tracker_url(port));
+
+		auto const initial = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(initial.replies, 2);
+		TEST_EQUAL(initial.errors, 0);
+
+		h.force_reannounce(0, torrent_handle::ignore_min_interval | torrent_handle::high_priority);
+
+		// The server delays the response for 22 seconds without sending application
+		// data. It answers pings, and refuses announces on replacement connections,
+		// so a reconnect cannot make this test pass accidentally.
+		auto const delayed = count_tracker_alerts(s, seconds(25));
+		TEST_EQUAL(delayed.replies, 2);
+		TEST_EQUAL(delayed.errors, 0);
 	}
 	stop_websocket_server();
 }
