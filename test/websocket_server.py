@@ -18,6 +18,7 @@ logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
 async def handle(websocket):
+    accepted_peer_id = None
     # the tracker behavior to simulate:
     # normal: respond to every announce
     # failure: respond to every announce with a failure reason
@@ -46,14 +47,14 @@ async def handle(websocket):
             peer_id = request.get("peer_id", "<missing>")
 
             if mode == 'peer-id-close':
-                if not hasattr(websocket, "accepted_peer_id"):
-                    websocket.accepted_peer_id = peer_id
+                if accepted_peer_id is None:
+                    accepted_peer_id = peer_id
                     print("[peer-id-close] ACCEPT connection={} peer_id={} info_hash={}".format(
                         websocket.remote_address, peer_id, info_hash), flush=True)
-                elif peer_id != websocket.accepted_peer_id:
+                elif peer_id != accepted_peer_id:
                     print("[peer-id-close] REJECT connection={} accepted_peer_id={} "
                         "received_peer_id={} info_hash={} action=close".format(
-                            websocket.remote_address, websocket.accepted_peer_id,
+                            websocket.remote_address, accepted_peer_id,
                             peer_id, info_hash), flush=True)
                     await websocket.close(code=1008, reason="peer_id changed on shared connection")
                     return
