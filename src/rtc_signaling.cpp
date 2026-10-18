@@ -442,6 +442,12 @@ void rtc_signaling::on_data_channel(error_code const& ec
 
 	if (ec)
 	{
+		// A timeout may remove the connection before ICE gathering completes.
+		// Complete the offer/answer operation as well, or an announce waiting
+		// for generated offers can remain pending indefinitely.
+		if (conn.description_completion)
+			conn.description_completion(ec, "");
+
 #ifndef TORRENT_DISABLE_LOGGING
 		debug_log("*** RTC negotiation failed");
 #endif
