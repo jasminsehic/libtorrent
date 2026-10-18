@@ -316,11 +316,13 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	// by offer_batch.
 	auto const completed = std::make_shared<std::atomic_bool>(false);
 	description_handler const complete_description =
-		[completion_handler = std::move(handler), completed](
+		[completion_handler = std::move(handler), completed, io_context = &m_io_context](
 			error_code const& ec, std::string const& description)
 		{
 			if (completed->exchange(true)) return;
-			completion_handler(ec, description);
+			post(*io_context, [completion_handler, ec, description] {
+				completion_handler(ec, description);
+			});
 		};
 
 	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc)
