@@ -1051,8 +1051,6 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 		lt::session s(websocket_tracker_settings());
 		auto const url = websocket_tracker_url(port);
 		std::array<torrent_handle, num_torrents> torrents;
-		std::array<int, num_torrents> replies{};
-		std::array<int, num_torrents> errors{};
 		std::array<int, num_torrents> retry_replies{};
 		std::array<int, num_torrents> retry_errors{};
 
@@ -1079,7 +1077,6 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 						if (reply->handle == torrents[std::size_t(i)])
 						{
 						++phase_replies[std::size_t(i)];
-						++replies[std::size_t(i)];
 						break;
 						}
 				}
@@ -1089,29 +1086,30 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 						if (err->handle == torrents[std::size_t(i)])
 						{
 						++phase_errors[std::size_t(i)];
-						++errors[std::size_t(i)];
 						break;
 						}
 				}
 			}
 		};
 
+		std::array<int, num_torrents> initial_replies{};
+		std::array<int, num_torrents> initial_errors{};
 		auto const initial_end = clock_type::now() + seconds(8);
 		while (clock_type::now() < initial_end)
 		{
 			s.wait_for_alert(initial_end - clock_type::now());
-			collect_alerts("peer-id-close-initial", replies, errors);
+			collect_alerts("peer-id-close-initial", initial_replies, initial_errors);
 		}
 
 		int total_initial_replies = 0;
 		int total_initial_errors = 0;
 		for (int i = 0; i < num_torrents; ++i)
 		{
-			total_initial_replies += replies[std::size_t(i)];
-			total_initial_errors += errors[std::size_t(i)];
+			total_initial_replies += initial_replies[std::size_t(i)];
+			total_initial_errors += initial_errors[std::size_t(i)];
 			auto const line = std::string("[peer-id-close-test] torrent=") + std::to_string(i)
-				+ " initial_replies=" + std::to_string(replies[std::size_t(i)])
-				+ " initial_errors=" + std::to_string(errors[std::size_t(i)]);
+				+ " initial_replies=" + std::to_string(initial_replies[std::size_t(i)])
+				+ " initial_errors=" + std::to_string(initial_errors[std::size_t(i)]);
 			std::printf("%s\n", line.c_str());
 			write_peer_id_close_log(line);
 		}
