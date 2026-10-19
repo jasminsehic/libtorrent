@@ -1122,12 +1122,68 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 			write_peer_id_close_log(status_line);
 		}
 
-		// Each torrent must have at least one announce completed, either by a
-		// tracker reply or an error. In particular, closing a shared connection
-		// must not leave one of the other torrents' announces pending forever.
-		TEST_CHECK(first_replies + first_errors > 0);
-		TEST_CHECK(second_replies + second_errors > 0);
-		TEST_CHECK(third_replies + third_errors > 0);
+		// Record completed announces before forcing a second round. The first
+		// round establishes the connection-close scenario; the second checks that
+		// torrents can still complete tracker operations after that close.
+		int const first_before_retry = first_replies + first_errors;
+		int const second_before_retry = second_replies + second_errors;
+		int const third_before_retry = third_replies + third_errors;
+
+		for (auto const& h : {first, second, third})
+			h.force_reannounce(0, torrent_handle::high_priority
+				| torrent_handle::ignore_min_interval);
+
+		write_peer_id_close_log("[peer-id-close-test] forced reannounce on all torrents");
+		auto const retry_end = clock_type::now() + seconds(5);
+		while (clock_type::now() < retry_end
+			&& (first_replies + first_errors == first_before_retry
+				|| second_replies + second_errors == second_before_retry
+				|| third_replies + third_errors == third_before_retry))
+		{
+			s.wait_for_alert(retry_end - clock_type::now());
+			s.pop_alerts(&alerts);
+			for (auto const* a : alerts)
+			{
+				auto const alert_line =
+					std::string("[peer-id-close-retry] ") + a->what() + ": " + a->message();
+				std::printf("%s\\n", alert_line.c_str());
+				write_peer_id_close_log(alert_line);
+				if (auto const* reply = alert_cast<tracker_reply_alert>(a))
+				{
+					if (reply->handle == first) ++first_replies;
+					else if (reply->handle == second) ++second_replies;
+					else if (reply->handle == third) ++third_replies;
+					else ++other_tracker_alerts;
+				}
+				if (auto const* err = alert_cast<tracker_error_alert>(a))
+				{
+					if (err->handle == first) ++first_errors;
+					else if (err->handle == second) ++second_errors;
+					else if (err->handle == third) ++third_errors;
+					else ++other_tracker_alerts;
+				}
+			}
+		}
+
+		auto const retry_summary = std::string("[peer-id-close-test] after retry: first replies=")
+			+ std::to_string(first_replies) + " errors=" + std::to_string(first_errors)
+			+ "; second replies=" + std::to_string(second_replies) + " errors="
+			+ std::to_string(second_errors) + "; third replies=" + std::to_string(third_replies)
+			+ " errors=" + std::to_string(third_errors);
+		std::printf("%s\\n", retry_summary.c_str());
+		write_peer_id_close_log(retry_summary);
+
+		// Each torrent must have at least one announce completed in the initial
+		// round, either by a tracker reply or an error.
+		TEST_CHECK(first_before_retry > 0);
+		TEST_CHECK(second_before_retry > 0);
+		TEST_CHECK(third_before_retry > 0);
+
+		// Every torrent must also complete an announce after the forced retry.
+		// This catches a tracker operation left pending after the socket closes.
+		TEST_CHECK(first_replies + first_errors > first_before_retry);
+		TEST_CHECK(second_replies + second_errors > second_before_retry);
+		TEST_CHECK(third_replies + third_errors > third_before_retry);
 
 		// At least one announce must succeed before/alongside the rejection,
 		// so a server startup or connection failure cannot satisfy this test.
