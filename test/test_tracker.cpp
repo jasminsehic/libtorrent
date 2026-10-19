@@ -1043,155 +1043,113 @@ void write_peer_id_close_log(std::string const& line)
 // diagnostics in the test output so CI logs are sufficient to inspect failures.
 TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 {
+	constexpr int num_torrents = 8;
 	write_peer_id_close_log("\n=== websocket_tracker_shared_connection_peer_id_change ===");
-	int const port = start_websocket_server(false, 30, "peer-id-close");
+	int const port = start_websocket_server(false, 30, "peer-id-close-recover");
 	write_peer_id_close_log("mock tracker listening on port " + std::to_string(port));
 	{
 		lt::session s(websocket_tracker_settings());
 		auto const url = websocket_tracker_url(port);
-		auto const first =
-			add_websocket_tracker_torrent(s, "tmp_ws_peer_id_first", url, "first-torrent");
-		auto const second =
-			add_websocket_tracker_torrent(s, "tmp_ws_peer_id_second", url, "second-torrent");
-		auto const third =
-			add_websocket_tracker_torrent(s, "tmp_ws_peer_id_third", url, "third-torrent");
+		std::array<torrent_handle, num_torrents> torrents;
+		std::array<int, num_torrents> replies{};
+		std::array<int, num_torrents> errors{};
+		std::array<int, num_torrents> retry_replies{};
+		std::array<int, num_torrents> retry_errors{};
 
-		int first_replies = 0;
-		int second_replies = 0;
-		int third_replies = 0;
-		int first_errors = 0;
-		int second_errors = 0;
-		int third_errors = 0;
-		int other_tracker_alerts = 0;
-		auto const end = clock_type::now() + seconds(8);
-		std::vector<alert*> alerts;
-		while (clock_type::now() < end)
+		for (int i = 0; i < num_torrents; ++i)
 		{
-			s.wait_for_alert(end - clock_type::now());
+			auto const name = "peer-id-close-" + std::to_string(i);
+			auto const path = "tmp_ws_peer_id_" + std::to_string(i);
+			torrents[std::size_t(i)] = add_websocket_tracker_torrent(s, path.c_str(), url, name.c_str());
+		}
+
+		auto collect_alerts = [&](char const* phase, std::array<int, num_torrents>& phase_replies,
+			std::array<int, num_torrents>& phase_errors)
+		{
+			std::vector<alert*> alerts;
 			s.pop_alerts(&alerts);
 			for (auto const* a : alerts)
 			{
-				auto const alert_line =
-					std::string("[peer-id-close-test] ") + a->what() + ": " + a->message();
+				auto const alert_line = std::string("[") + phase + "] " + a->what() + ": " + a->message();
 				std::printf("%s\n", alert_line.c_str());
 				write_peer_id_close_log(alert_line);
 				if (auto const* reply = alert_cast<tracker_reply_alert>(a))
 				{
-					if (reply->handle == first)
-						++first_replies;
-					else if (reply->handle == second)
-						++second_replies;
-					else if (reply->handle == third)
-						++third_replies;
-					else
-						++other_tracker_alerts;
+					for (int i = 0; i < num_torrents; ++i)
+						if (reply->handle == torrents[std::size_t(i)])
+						{
+						++phase_replies[std::size_t(i)];
+						++replies[std::size_t(i)];
+						break;
+						}
 				}
 				if (auto const* err = alert_cast<tracker_error_alert>(a))
 				{
-					if (err->handle == first)
-						++first_errors;
-					else if (err->handle == second)
-						++second_errors;
-					else if (err->handle == third)
-						++third_errors;
-					else
-						++other_tracker_alerts;
+					for (int i = 0; i < num_torrents; ++i)
+						if (err->handle == torrents[std::size_t(i)])
+						{
+						++phase_errors[std::size_t(i)];
+						++errors[std::size_t(i)];
+						break;
+						}
 				}
 			}
-		}
+		};
 
-		auto const summary = std::string("[peer-id-close-test] summary: first replies=")
-			+ std::to_string(first_replies) + " errors=" + std::to_string(first_errors)
-			+ "; second replies=" + std::to_string(second_replies) + " errors="
-			+ std::to_string(second_errors) + "; third replies=" + std::to_string(third_replies)
-			+ " errors=" + std::to_string(third_errors)
-			+ "; other=" + std::to_string(other_tracker_alerts);
-		std::printf("%s\n", summary.c_str());
-		write_peer_id_close_log(summary);
-		for (auto const& item : std::array<std::pair<char const*, torrent_handle>, 3>{
-				 {{"first", first}, {"second", second}, {"third", third}}})
+		auto const initial_end = clock_type::now() + seconds(8);
+		while (clock_type::now() < initial_end)
 		{
-			auto const st = item.second.status();
-			auto const status_line = std::string("[peer-id-close-test] torrent=") + item.first
-				+ " tracker=" + st.current_tracker + " next_announce_ms="
-				+ std::to_string(
-					static_cast<long long>(duration_cast<milliseconds>(st.next_announce).count()))
-				+ " errc=" + st.errc.message()
-				+ " announcing_to_trackers=" + std::to_string(int(st.announcing_to_trackers));
-			std::printf("%s\n", status_line.c_str());
-			write_peer_id_close_log(status_line);
+			s.wait_for_alert(initial_end - clock_type::now());
+			collect_alerts("peer-id-close-initial", replies, errors);
 		}
 
-		// Record completed announces before forcing a second round. The first
-		// round establishes the connection-close scenario; the second checks that
-		// torrents can still complete tracker operations after that close.
-		int const first_before_retry = first_replies + first_errors;
-		int const second_before_retry = second_replies + second_errors;
-		int const third_before_retry = third_replies + third_errors;
+		int total_initial_replies = 0;
+		int total_initial_errors = 0;
+		for (int i = 0; i < num_torrents; ++i)
+		{
+			total_initial_replies += replies[std::size_t(i)];
+			total_initial_errors += errors[std::size_t(i)];
+			auto const line = std::string("[peer-id-close-test] torrent=") + std::to_string(i)
+				+ " initial_replies=" + std::to_string(replies[std::size_t(i)])
+				+ " initial_errors=" + std::to_string(errors[std::size_t(i)]);
+			std::printf("%s\n", line.c_str());
+			write_peer_id_close_log(line);
+		}
 
-		for (auto const& h : {first, second, third})
+		// The initial round must demonstrate both normal responses and a peer-ID
+		// collision that closes a shared WebSocket connection.
+		TEST_CHECK(total_initial_replies > 0);
+		TEST_CHECK(total_initial_errors > 0);
+
+		for (auto const& h : torrents)
 			h.force_reannounce(0, torrent_handle::high_priority
 				| torrent_handle::ignore_min_interval);
-
 		write_peer_id_close_log("[peer-id-close-test] forced reannounce on all torrents");
-		auto const retry_end = clock_type::now() + seconds(5);
-		while (clock_type::now() < retry_end
-			&& (first_replies + first_errors == first_before_retry
-				|| second_replies + second_errors == second_before_retry
-				|| third_replies + third_errors == third_before_retry))
+
+		auto const retry_end = clock_type::now() + seconds(12);
+		while (clock_type::now() < retry_end)
 		{
 			s.wait_for_alert(retry_end - clock_type::now());
-			s.pop_alerts(&alerts);
-			for (auto const* a : alerts)
-			{
-				auto const alert_line =
-					std::string("[peer-id-close-retry] ") + a->what() + ": " + a->message();
-				std::printf("%s\\n", alert_line.c_str());
-				write_peer_id_close_log(alert_line);
-				if (auto const* reply = alert_cast<tracker_reply_alert>(a))
-				{
-					if (reply->handle == first) ++first_replies;
-					else if (reply->handle == second) ++second_replies;
-					else if (reply->handle == third) ++third_replies;
-					else ++other_tracker_alerts;
-				}
-				if (auto const* err = alert_cast<tracker_error_alert>(a))
-				{
-					if (err->handle == first) ++first_errors;
-					else if (err->handle == second) ++second_errors;
-					else if (err->handle == third) ++third_errors;
-					else ++other_tracker_alerts;
-				}
-			}
+			collect_alerts("peer-id-close-retry", retry_replies, retry_errors);
+			bool all_recovered = true;
+			for (int i = 0; i < num_torrents; ++i)
+				if (retry_replies[std::size_t(i)] == 0)
+					all_recovered = false;
+			if (all_recovered)
+				break;
 		}
 
-		auto const retry_summary = std::string("[peer-id-close-test] after retry: first replies=")
-			+ std::to_string(first_replies) + " errors=" + std::to_string(first_errors)
-			+ "; second replies=" + std::to_string(second_replies) + " errors="
-			+ std::to_string(second_errors) + "; third replies=" + std::to_string(third_replies)
-			+ " errors=" + std::to_string(third_errors);
-		std::printf("%s\\n", retry_summary.c_str());
-		write_peer_id_close_log(retry_summary);
-
-		// Each torrent must have at least one announce completed in the initial
-		// round, either by a tracker reply or an error.
-		TEST_CHECK(first_before_retry > 0);
-		TEST_CHECK(second_before_retry > 0);
-		TEST_CHECK(third_before_retry > 0);
-
-		// Every torrent must also complete an announce after the forced retry.
-		// This catches a tracker operation left pending after the socket closes.
-		TEST_CHECK(first_replies + first_errors > first_before_retry);
-		TEST_CHECK(second_replies + second_errors > second_before_retry);
-		TEST_CHECK(third_replies + third_errors > third_before_retry);
-
-		// At least one announce must succeed before/alongside the rejection,
-		// so a server startup or connection failure cannot satisfy this test.
-		TEST_CHECK(first_replies + second_replies + third_replies > 0);
-
-		// The peer-id-close server must have rejected at least one announce.
-		// Otherwise this run did not exercise the connection-close path.
-		TEST_CHECK(first_errors + second_errors + third_errors > 0);
+		for (int i = 0; i < num_torrents; ++i)
+		{
+			auto const line = std::string("[peer-id-close-test] after retry torrent=")
+				+ std::to_string(i) + " replies=" + std::to_string(retry_replies[std::size_t(i)])
+				+ " errors=" + std::to_string(retry_errors[std::size_t(i)]);
+			std::printf("%s\n", line.c_str());
+			write_peer_id_close_log(line);
+			// Every torrent must receive a successful reply after the server's
+			// one-time close, rather than merely completing with another error.
+			TEST_CHECK(retry_replies[std::size_t(i)] > 0);
+		}
 	}
 	stop_websocket_server();
 }
