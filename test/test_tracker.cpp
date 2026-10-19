@@ -1089,12 +1089,16 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 				, st.errc.message().c_str(), int(st.announcing_to_trackers));
 		}
 
-		// The purpose of this test is to establish the observable result of the
-		// peer-id rejection, not to encode a particular failure mode as correct.
-		// The per-torrent alert counts and server-side close reason above show
-		// whether the unaffected announce succeeds and whether rejected announces
-		// are completed with errors or remain uncompleted.
-		TEST_CHECK(first_replies + second_replies + third_replies > 0);
+		// Each torrent must have at least one announce completed, either by a
+		// tracker reply or an error. In particular, closing a shared connection
+		// must not leave one of the other torrents' announces pending forever.
+		TEST_CHECK(first_replies + first_errors > 0);
+		TEST_CHECK(second_replies + second_errors > 0);
+		TEST_CHECK(third_replies + third_errors > 0);
+
+		// The peer-id-close server must have rejected at least one announce.
+		// Otherwise this run did not exercise the connection-close path.
+		TEST_CHECK(first_errors + second_errors + third_errors > 0);
 	}
 	stop_websocket_server();
 }
