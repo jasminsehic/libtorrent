@@ -34,6 +34,8 @@ see LICENSE file.
 #include "libtorrent/aux_/socket_io.hpp"
 
 #include <array>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 using namespace lt;
@@ -1021,6 +1023,15 @@ std::string websocket_tracker_url(int const port)
 	return "ws://127.0.0.1:" + std::to_string(port) + "/announce";
 }
 
+void write_peer_id_close_log(std::string const& line)
+{
+	auto const* path = std::getenv("LIBTORRENT_WEBSOCKET_TEST_LOG");
+	if (path == nullptr || *path == '\0') return;
+
+	std::ofstream log(path, std::ios::app);
+	if (log) log << line << '\n';
+}
+
 } // anonymous namespace
 
 // Reproduce trackers that bind a WebSocket connection to the first peer_id
@@ -1029,7 +1040,9 @@ std::string websocket_tracker_url(int const port)
 // diagnostics in the test output so CI logs are sufficient to inspect failures.
 TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 {
+	write_peer_id_close_log("\n=== websocket_tracker_shared_connection_peer_id_change ===");
 	int const port = start_websocket_server(false, 30, "peer-id-close");
+	write_peer_id_close_log("mock tracker listening on port " + std::to_string(port));
 	{
 		lt::session s(websocket_tracker_settings());
 		auto const url = websocket_tracker_url(port);
@@ -1055,8 +1068,10 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 			s.pop_alerts(&alerts);
 			for (auto const* a : alerts)
 			{
-				std::printf("[peer-id-close-test] %s: %s\n"
-					, a->what(), a->message().c_str());
+				auto const alert_line = std::string("[peer-id-close-test] ")
+					+ a->what() + ": " + a->message();
+				std::printf("%s\n", alert_line.c_str());
+				write_peer_id_close_log(alert_line);
 				if (auto const* reply = alert_cast<tracker_reply_alert>(a))
 				{
 					if (reply->handle == first) ++first_replies;
@@ -1074,19 +1089,26 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 			}
 		}
 
-		std::printf("[peer-id-close-test] summary: first replies=%d errors=%d; "
-			"second replies=%d errors=%d; third replies=%d errors=%d; other=%d\n"
-			, first_replies, first_errors, second_replies, second_errors
-			, third_replies, third_errors, other_tracker_alerts);
+		auto const summary = std::string("[peer-id-close-test] summary: first replies=")
+			+ std::to_string(first_replies) + " errors=" + std::to_string(first_errors)
+			+ "; second replies=" + std::to_string(second_replies) + " errors="
+			+ std::to_string(second_errors) + "; third replies=" + std::to_string(third_replies)
+			+ " errors=" + std::to_string(third_errors) + "; other="
+			+ std::to_string(other_tracker_alerts);
+		std::printf("%s\n", summary.c_str());
+		write_peer_id_close_log(summary);
 		for (auto const& item : std::array<std::pair<char const*, torrent_handle>, 3>{{
 			{"first", first}, {"second", second}, {"third", third}}})
 		{
 			auto const st = item.second.status();
-			std::printf("[peer-id-close-test] torrent=%s tracker=%s next_announce_ms=%lld "
-				"errc=%s announcing_to_trackers=%d\n"
-				, item.first, st.current_tracker.c_str()
-				, static_cast<long long>(duration_cast<milliseconds>(st.next_announce).count())
-				, st.errc.message().c_str(), int(st.announcing_to_trackers));
+			auto const status_line = std::string("[peer-id-close-test] torrent=") + item.first
+				+ " tracker=" + st.current_tracker
+				+ " next_announce_ms=" + std::to_string(
+					static_cast<long long>(duration_cast<milliseconds>(st.next_announce).count()))
+				+ " errc=" + st.errc.message()
+				+ " announcing_to_trackers=" + std::to_string(int(st.announcing_to_trackers));
+			std::printf("%s\n", status_line.c_str());
+			write_peer_id_close_log(status_line);
 		}
 
 		// Each torrent must have at least one announce completed, either by a
