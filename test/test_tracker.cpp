@@ -1096,6 +1096,10 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 		TEST_CHECK(second_replies + second_errors > 0);
 		TEST_CHECK(third_replies + third_errors > 0);
 
+		// At least one announce must succeed before/alongside the rejection,
+		// so a server startup or connection failure cannot satisfy this test.
+		TEST_CHECK(first_replies + second_replies + third_replies > 0);
+
 		// The peer-id-close server must have rejected at least one announce.
 		// Otherwise this run did not exercise the connection-close path.
 		TEST_CHECK(first_errors + second_errors + third_errors > 0);
