@@ -306,6 +306,7 @@ jobs:
       - name: build and run tests
         env:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/.asan.suppressions
+          LIBTORRENT_WEBSOCKET_TEST_LOG: ${{ runner.temp }}/websocket-shared-peer-id-test.log
         run: |
           cd test
           b2 ${{ matrix.config }} -l500 warnings-as-errors=on debug-iterators=on asserts=on deterministic-tests
@@ -316,12 +317,22 @@ jobs:
       - name: run tests (flaky)
         env:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/.asan.suppressions
+          LIBTORRENT_WEBSOCKET_TEST_LOG: ${{ runner.temp }}/websocket-shared-peer-id-test.log
         uses: nick-fields/retry@v4
         with:
           timeout_minutes: 90
           retry_wait_seconds: 4
           max_attempts: 3
           command: (cd test; b2 ${{ matrix.config }} -l1800 warnings-as-errors=on debug-iterators=on asserts=on)
+
+      - name: upload WebSocket tracker test diagnostics
+        if: ${{ always() && contains(matrix.config, 'webtorrent=on') }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: websocket-tracker-test-diagnostics
+          path: ${{ runner.temp }}/websocket-shared-peer-id-test.log
+          if-no-files-found: warn
+          retention-days: 14
 
 
 
