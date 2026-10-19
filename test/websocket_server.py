@@ -16,8 +16,11 @@ logger = logging.getLogger('websockets')
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
+peer_id_close_recovery_triggered = False
+
 
 async def handle(websocket):
+    global peer_id_close_recovery_triggered
     accepted_peer_id = None
     # the tracker behavior to simulate:
     # normal: respond to every announce
@@ -30,6 +33,8 @@ async def handle(websocket):
     #   client ignores the uncorrelated failure without closing the connection.
     # peer-id-close: accept announces from the first peer_id on each connection;
     #   reject and close the connection when a different peer_id is observed.
+    # peer-id-close-recover: close the first connection that sees a peer_id change,
+    #   then accept announces normally so clients can recover on reconnect/retry.
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
 
     try:
@@ -46,21 +51,28 @@ async def handle(websocket):
             info_hash = request["info_hash"]
             peer_id = request.get("peer_id", "<missing>")
 
-            if mode == 'peer-id-close':
-                if accepted_peer_id is None:
+            if mode in ('peer-id-close', 'peer-id-close-recover'):
+                recover_mode = mode == 'peer-id-close-recover'
+                if recover_mode and peer_id_close_recovery_triggered:
+                    print("[peer-id-close-recover] ACCEPT-AFTER-RECOVERY connection={} "
+                        "peer_id={} info_hash={}".format(
+                            websocket.remote_address, peer_id, info_hash), flush=True)
+                elif accepted_peer_id is None:
                     accepted_peer_id = peer_id
-                    print("[peer-id-close] ACCEPT connection={} peer_id={} info_hash={}".format(
-                        websocket.remote_address, peer_id, info_hash), flush=True)
+                    print("[{}] ACCEPT connection={} peer_id={} info_hash={}".format(
+                        mode, websocket.remote_address, peer_id, info_hash), flush=True)
                 elif peer_id != accepted_peer_id:
-                    print("[peer-id-close] REJECT connection={} accepted_peer_id={} "
+                    print("[{}] REJECT connection={} accepted_peer_id={} "
                         "received_peer_id={} info_hash={} action=close".format(
-                            websocket.remote_address, accepted_peer_id,
+                            mode, websocket.remote_address, accepted_peer_id,
                             peer_id, info_hash), flush=True)
+                    if recover_mode:
+                        peer_id_close_recovery_triggered = True
                     await websocket.close(code=1008, reason="peer_id changed on shared connection")
                     return
                 else:
-                    print("[peer-id-close] ACCEPT-SAME connection={} peer_id={} info_hash={}".format(
-                        websocket.remote_address, peer_id, info_hash), flush=True)
+                    print("[{}] ACCEPT-SAME connection={} peer_id={} info_hash={}".format(
+                        mode, websocket.remote_address, peer_id, info_hash), flush=True)
 
             if mode == 'failure':
                 await websocket.send(json.dumps({
