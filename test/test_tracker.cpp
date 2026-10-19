@@ -998,9 +998,10 @@ lt::settings_pack websocket_tracker_settings()
 	return pack;
 }
 
-torrent_handle add_websocket_tracker_torrent(
-	lt::session& s, char const* save_path, std::string const& tracker_url
-	, char const* torrent_name = "temporary")
+torrent_handle add_websocket_tracker_torrent(lt::session& s,
+	char const* save_path,
+	std::string const& tracker_url,
+	char const* torrent_name = "temporary")
 {
 	error_code ec;
 	remove_all(save_path, ec);
@@ -1026,10 +1027,12 @@ std::string websocket_tracker_url(int const port)
 void write_peer_id_close_log(std::string const& line)
 {
 	auto const* path = std::getenv("LIBTORRENT_WEBSOCKET_TEST_LOG");
-	if (path == nullptr || *path == '\0') return;
+	if (path == nullptr || *path == '\0')
+		return;
 
 	std::ofstream log(path, std::ios::app);
-	if (log) log << line << '\n';
+	if (log)
+		log << line << '\n';
 }
 
 } // anonymous namespace
@@ -1046,12 +1049,12 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 	{
 		lt::session s(websocket_tracker_settings());
 		auto const url = websocket_tracker_url(port);
-		auto const first = add_websocket_tracker_torrent(
-			s, "tmp_ws_peer_id_first", url, "first-torrent");
-		auto const second = add_websocket_tracker_torrent(
-			s, "tmp_ws_peer_id_second", url, "second-torrent");
-		auto const third = add_websocket_tracker_torrent(
-			s, "tmp_ws_peer_id_third", url, "third-torrent");
+		auto const first =
+			add_websocket_tracker_torrent(s, "tmp_ws_peer_id_first", url, "first-torrent");
+		auto const second =
+			add_websocket_tracker_torrent(s, "tmp_ws_peer_id_second", url, "second-torrent");
+		auto const third =
+			add_websocket_tracker_torrent(s, "tmp_ws_peer_id_third", url, "third-torrent");
 
 		int first_replies = 0;
 		int second_replies = 0;
@@ -1068,23 +1071,31 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 			s.pop_alerts(&alerts);
 			for (auto const* a : alerts)
 			{
-				auto const alert_line = std::string("[peer-id-close-test] ")
-					+ a->what() + ": " + a->message();
+				auto const alert_line =
+					std::string("[peer-id-close-test] ") + a->what() + ": " + a->message();
 				std::printf("%s\n", alert_line.c_str());
 				write_peer_id_close_log(alert_line);
 				if (auto const* reply = alert_cast<tracker_reply_alert>(a))
 				{
-					if (reply->handle == first) ++first_replies;
-					else if (reply->handle == second) ++second_replies;
-					else if (reply->handle == third) ++third_replies;
-					else ++other_tracker_alerts;
+					if (reply->handle == first)
+						++first_replies;
+					else if (reply->handle == second)
+						++second_replies;
+					else if (reply->handle == third)
+						++third_replies;
+					else
+						++other_tracker_alerts;
 				}
 				if (auto const* err = alert_cast<tracker_error_alert>(a))
 				{
-					if (err->handle == first) ++first_errors;
-					else if (err->handle == second) ++second_errors;
-					else if (err->handle == third) ++third_errors;
-					else ++other_tracker_alerts;
+					if (err->handle == first)
+						++first_errors;
+					else if (err->handle == second)
+						++second_errors;
+					else if (err->handle == third)
+						++third_errors;
+					else
+						++other_tracker_alerts;
 				}
 			}
 		}
@@ -1093,17 +1104,17 @@ TORRENT_TEST(websocket_tracker_shared_connection_peer_id_change)
 			+ std::to_string(first_replies) + " errors=" + std::to_string(first_errors)
 			+ "; second replies=" + std::to_string(second_replies) + " errors="
 			+ std::to_string(second_errors) + "; third replies=" + std::to_string(third_replies)
-			+ " errors=" + std::to_string(third_errors) + "; other="
-			+ std::to_string(other_tracker_alerts);
+			+ " errors=" + std::to_string(third_errors)
+			+ "; other=" + std::to_string(other_tracker_alerts);
 		std::printf("%s\n", summary.c_str());
 		write_peer_id_close_log(summary);
-		for (auto const& item : std::array<std::pair<char const*, torrent_handle>, 3>{{
-			{"first", first}, {"second", second}, {"third", third}}})
+		for (auto const& item : std::array<std::pair<char const*, torrent_handle>, 3>{
+				 {{"first", first}, {"second", second}, {"third", third}}})
 		{
 			auto const st = item.second.status();
 			auto const status_line = std::string("[peer-id-close-test] torrent=") + item.first
-				+ " tracker=" + st.current_tracker
-				+ " next_announce_ms=" + std::to_string(
+				+ " tracker=" + st.current_tracker + " next_announce_ms="
+				+ std::to_string(
 					static_cast<long long>(duration_cast<milliseconds>(st.next_announce).count()))
 				+ " errc=" + st.errc.message()
 				+ " announcing_to_trackers=" + std::to_string(int(st.announcing_to_trackers));
