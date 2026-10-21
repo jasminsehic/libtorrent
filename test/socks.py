@@ -210,12 +210,13 @@ class SocksHandler(StreamRequestHandler):
         raw_dest_port = self.read(2)
         dest_port, = unpack('>H', raw_dest_port)
 
-        if address_type == IPV6:
-            outbound_sock = socket.socket(socket.AF_INET6)
-        else:
-            outbound_sock = socket.socket(socket.AF_INET)
+        # Match the resolved address to the outbound socket family. A DNS
+        # name such as localhost may resolve to IPv6 before IPv4.
+        family = socket.AF_INET6 if address_type == IPV6 else socket.AF_UNSPEC
         try:
-            out_address = socket.getaddrinfo(dest_address, dest_port)[0][4]
+            infos = socket.getaddrinfo(dest_address, dest_port, family, socket.SOCK_STREAM)
+            resolved_family, _, _, _, out_address = infos[0]
+            outbound_sock = socket.socket(resolved_family, socket.SOCK_STREAM)
         except Exception as e:
             error('%s' % e)
             traceback.print_exc(file=sys.stdout)
@@ -234,7 +235,7 @@ class SocksHandler(StreamRequestHandler):
             traceback.print_exc(file=sys.stdout)
             return
 
-        if address_type == IPV6:
+        if resolved_family == socket.AF_INET6:
             self.send_reply6(outbound_sock.getsockname())
         else:
             self.send_reply(outbound_sock.getsockname())
