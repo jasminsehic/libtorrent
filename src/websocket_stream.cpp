@@ -21,6 +21,7 @@ see LICENSE file.
 #include "libtorrent/aux_/parse_url.hpp"
 #include "libtorrent/aux_/instantiate_connection.hpp"
 #include "libtorrent/aux_/socket_type.hpp"
+#include "libtorrent/aux_/ip_helpers.hpp"
 #include "libtorrent/aux_/random.hpp"
 
 #include "libtorrent/aux_/disable_warnings_push.hpp"
@@ -91,12 +92,20 @@ void setup_websocket_ssl_hostname(
 
 websocket_stream::websocket_stream(
 	io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx)
+	: websocket_stream(ios, resolver, ssl_ctx, proxy_settings{})
+{}
+
+websocket_stream::websocket_stream(
+	io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx, proxy_settings proxy)
 	: m_io_service(ios)
 	, m_resolver(resolver)
 	, m_ssl_context(ssl_ctx)
+	, m_proxy(std::move(proxy))
 	, m_open(false)
 	, m_keepalive_timer(ios)
-{}
+{
+
+}
 
 void websocket_stream::close()
 {
@@ -168,13 +177,21 @@ void websocket_stream::do_connect(std::string url)
 	m_hostname = std::move(hostname);
 	m_port = std::uint16_t(port);
 
-	do_resolve(m_hostname, m_port);
+	bool const use_proxy = m_proxy.type != settings_pack::none && m_proxy.proxy_tracker_connections;
+	m_remote_dns = use_proxy && m_proxy.proxy_hostnames && !is_ip_address(m_hostname)
+		&& (m_proxy.type == settings_pack::socks5 || m_proxy.type == settings_pack::socks5_pw
+			|| m_proxy.type == settings_pack::http || m_proxy.type == settings_pack::http_pw);
+
+	if (m_remote_dns)
+		do_tcp_connect({tcp::endpoint(address(), m_port)});
+	else
+		do_resolve(m_hostname, m_port);
 }
 
 void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 {
 	m_hostname = std::move(hostname);
-	m_port = std::move(port);
+	m_port = port;
 
 	ADD_OUTSTANDING_ASYNC("websocket_stream::on_resolve");
 	m_resolver.async_resolve(m_hostname
@@ -217,12 +234,19 @@ void websocket_stream::connect_endpoint()
 		return;
 	TORRENT_ASSERT(m_endpoint_index < m_endpoints.size());
 
-	// Construct a fresh socket for each endpoint attempt. TLS is established
-	// by ssl_stream::async_connect() before the WebSocket handshake.
+	bool const use_proxy = m_proxy.type != settings_pack::none && m_proxy.proxy_tracker_connections;
+	proxy_settings proxy = m_proxy;
+	if (!use_proxy)
+		proxy.type = settings_pack::none;
+
+
 	void* ssl_context =
 		m_url.compare(0, 4, "wss:") == 0 ? static_cast<void*>(m_ssl_context) : nullptr;
-	auto socket = instantiate_connection(
-		m_io_service, proxy_settings{}, ssl_context, nullptr, false, true);
+	auto socket = instantiate_connection(m_io_service, proxy, ssl_context, nullptr, false, true);
+
+	// Each endpoint attempt gets a fresh transport. Proxy streams retain
+	// connection state (and HTTP CONNECT state) after some failures, so they
+	// cannot safely be reused for the next resolved endpoint.
 	auto websocket_socket = make_websocket_socket(socket);
 	if (!websocket_socket)
 	{
@@ -233,7 +257,33 @@ void websocket_stream::connect_endpoint()
 	m_stream.reset();
 	m_stream.emplace(std::move(*websocket_socket));
 
-	// Preserve SNI and certificate hostname verification for WSS.
+	// Configure proxy destination details on the final transport. This mirrors
+	// http_connection::connect(), and ensures SOCKS5 receives the destination
+	// hostname rather than the placeholder endpoint used for remote DNS.
+	auto& transport = m_stream->next_layer();
+	if (use_proxy && (m_proxy.type == settings_pack::http || m_proxy.type == settings_pack::http_pw)
+		&& (m_remote_dns || m_proxy.send_host_in_connect))
+	{
+		if (auto* http_socket = std::get_if<http_stream>(&transport.var()))
+			http_socket->set_host(m_hostname);
+#if TORRENT_USE_SSL
+		else if (auto* ssl_http_socket = std::get_if<ssl_stream<http_stream>>(&transport.var()))
+			ssl_http_socket->next_layer().set_host(m_hostname);
+#endif
+	}
+
+	if (m_remote_dns
+		&& (m_proxy.type == settings_pack::socks5 || m_proxy.type == settings_pack::socks5_pw))
+	{
+		if (auto* socks_socket = std::get_if<socks5_stream>(&transport.var()))
+			socks_socket->set_dst_name(m_hostname);
+#if TORRENT_USE_SSL
+		else if (auto* ssl_socks_socket = std::get_if<ssl_stream<socks5_stream>>(&transport.var()))
+			ssl_socks_socket->next_layer().set_dst_name(m_hostname);
+#endif
+	}
+
+	// Set the TLS hostname before connecting, preserving SNI and certificate validation.
 	error_code ssl_ec;
 	setup_websocket_ssl_hostname(m_stream->next_layer(), m_hostname, ssl_ec);
 	if (ssl_ec)

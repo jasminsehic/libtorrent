@@ -22,6 +22,7 @@ see LICENSE file.
 #include "libtorrent/aux_/io_bytes.hpp"
 #include "libtorrent/io_context.hpp"
 #include "libtorrent/aux_/resolver_interface.hpp"
+#include "libtorrent/aux_/proxy_settings.hpp"
 #include "libtorrent/aux_/socket_type.hpp"
 #include "libtorrent/aux_/ssl.hpp"
 #include "libtorrent/aux_/ssl_stream.hpp"
@@ -166,6 +167,8 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 	using write_handler = std::function<void(error_code const&, std::size_t)>;
 
 	websocket_stream(io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx);
+	websocket_stream(
+		io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx, proxy_settings proxy);
 
 	~websocket_stream() = default;
 	websocket_stream& operator=(websocket_stream const&) = delete;
@@ -261,6 +264,7 @@ private:
 	io_context& m_io_service;
 	resolver_interface& m_resolver;
 	ssl::context* m_ssl_context;
+	proxy_settings m_proxy;
 
 	using stream_type = websocket::stream<websocket_socket_type>;
 	std::optional<stream_type> m_stream;
@@ -272,6 +276,7 @@ private:
 	std::string m_user_agent;
 	std::vector<tcp::endpoint> m_endpoints;
 	std::size_t m_endpoint_index = 0;
+	bool m_remote_dns = false;
 
 	connect_handler m_connect_handler;
 
