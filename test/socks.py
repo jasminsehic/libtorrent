@@ -210,26 +210,25 @@ class SocksHandler(StreamRequestHandler):
         raw_dest_port = self.read(2)
         dest_port, = unpack('>H', raw_dest_port)
 
-        # Match the resolved address to the outbound socket family. A DNS
-        # name such as localhost may resolve to IPv6 before IPv4.
-        family = socket.AF_INET6 if address_type == IPV6 else socket.AF_UNSPEC
-        try:
-            infos = socket.getaddrinfo(dest_address, dest_port, family, socket.SOCK_STREAM)
-            resolved_family, _, _, _, out_address = infos[0]
-            outbound_sock = socket.socket(resolved_family, socket.SOCK_STREAM)
-        except Exception as e:
-            error('%s' % e)
-            traceback.print_exc(file=sys.stdout)
-            return
-
         if cmd == UDP_ASSOCIATE:
             debug("no UDP support yet, closing")
             return
 
-        debug("Creating forwarder connection to %s:%d" % (out_address[0], out_address[1]))
-
+        # A hostname such as localhost may resolve to IPv6 before IPv4,
+        # while the destination server listens on only one of them.
+        family = socket.AF_INET6 if address_type == IPV6 else socket.AF_UNSPEC
         try:
-            outbound_sock.connect(out_address)
+            infos = socket.getaddrinfo(dest_address, dest_port, family, socket.SOCK_STREAM)
+            for resolved_family, sock_type, proto, _, out_address in infos:
+                outbound_sock = socket.socket(resolved_family, sock_type, proto)
+                try:
+                    debug("Connecting to %s:%d" % (out_address[0], out_address[1]))
+                    outbound_sock.connect(out_address)
+                    break
+                except OSError:
+                    outbound_sock.close()
+            else:
+                raise OSError("Could not connect to any resolved destination address")
         except Exception as e:
             error('%s' % e)
             traceback.print_exc(file=sys.stdout)
