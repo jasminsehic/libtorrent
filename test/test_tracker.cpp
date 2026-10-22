@@ -1002,8 +1002,10 @@ lt::settings_pack websocket_tracker_settings()
 	return pack;
 }
 
-torrent_handle add_websocket_tracker_torrent(
-	lt::session& s, char const* save_path, std::string const& tracker_url)
+torrent_handle add_websocket_tracker_torrent(lt::session& s,
+	char const* save_path,
+	std::string const& tracker_url,
+	bool const i2p_torrent = false)
 {
 	error_code ec;
 	remove_all(save_path, ec);
@@ -1017,6 +1019,12 @@ torrent_handle add_websocket_tracker_torrent(
 	addp.flags &= ~torrent_flags::paused;
 	addp.flags &= ~torrent_flags::auto_managed;
 	addp.flags |= torrent_flags::seed_mode;
+#if TORRENT_USE_I2P
+	if (i2p_torrent)
+		addp.flags |= torrent_flags::i2p_torrent;
+#else
+	TORRENT_UNUSED(i2p_torrent);
+#endif
 	addp.save_path = save_path;
 	return s.add_torrent(addp);
 }
@@ -1227,6 +1235,166 @@ TORRENT_TEST(websocket_tracker_proxy_success)
 	// The SOCKS5 proxy must resolve the destination rather than libtorrent.
 	test_websocket_tracker_proxy_success(false, settings_pack::socks5, "localhost", true);
 }
+
+#if TORRENT_USE_I2P
+// I2P tracker names must not resolve through public DNS or fall back to
+// unproxied TCP when there is no configured SAM session.
+// WebRTC traffic uses ordinary ICE, not SAM. I2P-only torrents must not
+// generate offers or connect to WebSocket trackers, regardless of hostname.
+TORRENT_TEST(websocket_tracker_i2p_mixed_policy)
+{
+	int const port = start_websocket_server();
+	io_context stun_io;
+	udp::socket stun_listener(stun_io, udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
+	int const stun_port = stun_listener.local_endpoint().port();
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, false);
+		pack.set_str(
+			settings_pack::webtorrent_stun_server, "127.0.0.1:" + std::to_string(stun_port));
+		lt::session s(pack);
+		add_websocket_tracker_torrent(
+			s, "tmp_websocket_i2p_isolation", websocket_tracker_url(port), true);
+		auto const counts = count_tracker_alerts(s, seconds(2));
+		TEST_EQUAL(counts.replies, 0);
+		// ICE gathering would send STUN requests to this loopback listener.
+		// The strict-mode guard must prevent even these initial packets.
+		error_code ec;
+		TEST_EQUAL(stun_listener.available(ec), std::size_t(0));
+		TEST_CHECK(!ec);
+	}
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, true);
+		lt::session s(pack);
+		add_websocket_tracker_torrent(
+			s, "tmp_websocket_i2p_mixed", websocket_tracker_url(port), true);
+		auto const counts = count_tracker_alerts(s, seconds(6), 2);
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// Changing mixed mode must prevent new WebRTC offer generation before
+// reopening the tracker, while re-enabling it permits another announce.
+// Force past the test tracker's 60-second min_interval: this test verifies
+// mixed-mode behavior rather than tracker reannounce scheduling.
+TORRENT_TEST(websocket_tracker_i2p_mixed_transition)
+{
+	int const port = start_websocket_server();
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, true);
+		lt::session s(pack);
+		auto const h = add_websocket_tracker_torrent(
+			s, "tmp_websocket_i2p_transition", websocket_tracker_url(port), true);
+		auto counts = count_tracker_alerts(s, seconds(6), 2);
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+
+		settings_pack disabled;
+		disabled.set_bool(settings_pack::allow_i2p_mixed, false);
+		s.apply_settings(disabled);
+		h.force_reannounce(0, 0, torrent_handle::ignore_min_interval);
+		counts = count_tracker_alerts(s, seconds(2));
+		TEST_EQUAL(counts.replies, 0);
+
+		settings_pack enabled;
+		enabled.set_bool(settings_pack::allow_i2p_mixed, true);
+		s.apply_settings(enabled);
+		h.force_reannounce(0, 0, torrent_handle::ignore_min_interval);
+		counts = count_tracker_alerts(s, seconds(6), 2);
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// An I2P WebSocket tracker must complete SAM session creation, name lookup
+// and STREAM CONNECT before the normal WebSocket announce exchange.
+TORRENT_TEST(websocket_tracker_i2p_sam)
+{
+	int const tracker_port = start_websocket_server();
+	int const sam_port = start_sam_server(tracker_port);
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, true);
+		pack.set_str(settings_pack::i2p_hostname, "127.0.0.1");
+		pack.set_int(settings_pack::i2p_port, sam_port);
+		lt::session s(pack);
+		// Wait for the asynchronous SAM handshake before announcing.
+		std::this_thread::sleep_for(milliseconds(750));
+		add_websocket_tracker_torrent(
+			s, "tmp_websocket_i2p_sam", "ws://test-tracker.b32.i2p/announce", true);
+		auto const counts = count_tracker_alerts(s, seconds(10), 2);
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_sam_server();
+	stop_websocket_server();
+}
+
+TORRENT_TEST(websocket_tracker_i2p_sam_lookup_failure)
+{
+	int const tracker_port = start_websocket_server();
+	int const sam_port = start_sam_server(tracker_port, true);
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, true);
+		pack.set_str(settings_pack::i2p_hostname, "127.0.0.1");
+		pack.set_int(settings_pack::i2p_port, sam_port);
+		lt::session s(pack);
+		// Wait for the asynchronous SAM handshake before announcing.
+		std::this_thread::sleep_for(milliseconds(750));
+		add_websocket_tracker_torrent(
+			s, "tmp_websocket_i2p_sam_lookup_failure", "ws://nonexistent.b32.i2p/announce", true);
+		auto const counts = count_tracker_alerts(s, seconds(8), 0, true);
+		TEST_EQUAL(counts.replies, 0);
+		TEST_CHECK(counts.errors >= 1);
+	}
+	stop_sam_server();
+	stop_websocket_server();
+}
+
+// A .i2p WebSocket URL must not initiate RTC offer generation in
+// non-mixed mode, even if the torrent itself is not marked I2P.
+TORRENT_TEST(websocket_tracker_i2p_requires_mixed)
+{
+	settings_pack pack = websocket_tracker_settings();
+	pack.set_bool(settings_pack::allow_i2p_mixed, false);
+	pack.set_str(settings_pack::i2p_hostname, "");
+	lt::session s(pack);
+	add_websocket_tracker_torrent(
+		s, "tmp_websocket_i2p_requires_mixed", "ws://nonexistent.b32.i2p/announce");
+	auto const counts = count_tracker_alerts(s, seconds(2));
+	TEST_EQUAL(counts.replies, 0);
+}
+
+// A missing SAM router must fail before creating WebRTC offers, even when
+// mixed mode is explicitly enabled. No STUN packet should be transmitted.
+TORRENT_TEST(websocket_tracker_i2p_requires_router)
+{
+	io_context stun_io;
+	udp::socket stun_listener(stun_io, udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
+	int const stun_port = stun_listener.local_endpoint().port();
+	settings_pack pack = websocket_tracker_settings();
+	pack.set_bool(settings_pack::allow_i2p_mixed, true);
+	pack.set_str(settings_pack::i2p_hostname, "");
+	pack.set_str(settings_pack::webtorrent_stun_server, "127.0.0.1:" + std::to_string(stun_port));
+	{
+		lt::session s(pack);
+		add_websocket_tracker_torrent(
+			s, "tmp_websocket_tracker_i2p", "ws://nonexistent.b32.i2p/announce");
+		auto const counts = count_tracker_alerts(s, seconds(5), 0, true);
+		TEST_EQUAL(counts.replies, 0);
+		TEST_CHECK(counts.errors >= 1);
+		error_code ec;
+		TEST_EQUAL(stun_listener.available(ec), std::size_t(0));
+		TEST_CHECK(!ec);
+	}
+}
+#endif
 
 #if TORRENT_USE_SSL
 // The bundled test certificate is self-signed. Validation must reject it

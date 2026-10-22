@@ -516,6 +516,7 @@ int EXPORT main(int argc, char const* argv[])
 		// proxy past its own iteration, even if an exception is thrown
 		// between a call site's start and stop.
 		stop_web_server();
+		stop_sam_server();
 		stop_websocket_server();
 		stop_all_proxies();
 

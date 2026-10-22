@@ -49,10 +49,16 @@ std::optional<websocket_socket_type> make_websocket_socket(socket_type& socket)
 			if constexpr (std::is_same_v<stream_type, tcp::socket>
 				|| std::is_same_v<stream_type, socks5_stream>
 				|| std::is_same_v<stream_type, http_stream>
+#if TORRENT_USE_I2P
+				|| std::is_same_v<stream_type, i2p_stream>
+#endif
 #if TORRENT_USE_SSL
 				|| std::is_same_v<stream_type, ssl_stream<tcp::socket>>
 				|| std::is_same_v<stream_type, ssl_stream<socks5_stream>>
 				|| std::is_same_v<stream_type, ssl_stream<http_stream>>
+#if TORRENT_USE_I2P
+				|| std::is_same_v<stream_type, ssl_stream<i2p_stream>>
+#endif
 #endif
 			)
 				return websocket_socket_type(std::move(stream));
@@ -71,7 +77,11 @@ void setup_websocket_ssl_hostname(
 			using stream_type = std::decay_t<decltype(stream)>;
 			if constexpr (std::is_same_v<stream_type, ssl_stream<tcp::socket>>
 				|| std::is_same_v<stream_type, ssl_stream<socks5_stream>>
-				|| std::is_same_v<stream_type, ssl_stream<http_stream>>)
+				|| std::is_same_v<stream_type, ssl_stream<http_stream>>
+#if TORRENT_USE_I2P
+				|| std::is_same_v<stream_type, ssl_stream<i2p_stream>>
+#endif
+			)
 			{
 				stream.set_host_name(hostname, ec);
 				if (!ec)
@@ -95,12 +105,22 @@ websocket_stream::websocket_stream(
 	: websocket_stream(ios, resolver, ssl_ctx, proxy_settings{})
 {}
 
-websocket_stream::websocket_stream(
-	io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx, proxy_settings proxy)
+websocket_stream::websocket_stream(io_context& ios,
+	resolver_interface& resolver,
+	ssl::context* ssl_ctx,
+	proxy_settings proxy
+#if TORRENT_USE_I2P
+	,
+	i2p_connection* i2p_conn
+#endif
+	)
 	: m_io_service(ios)
 	, m_resolver(resolver)
 	, m_ssl_context(ssl_ctx)
 	, m_proxy(std::move(proxy))
+#if TORRENT_USE_I2P
+	, m_i2p_conn(i2p_conn)
+#endif
 	, m_open(false)
 	, m_keepalive_timer(ios)
 {
@@ -177,6 +197,26 @@ void websocket_stream::do_connect(std::string url)
 	m_hostname = std::move(hostname);
 	m_port = std::uint16_t(port);
 
+#if TORRENT_USE_I2P
+	// I2P destination names cannot be resolved using ordinary DNS, and must
+	// never fall back to an ordinary TCP connection or configured Internet proxy.
+	m_is_i2p = m_hostname.size() >= 4 && m_hostname.compare(m_hostname.size() - 4, 4, ".i2p") == 0;
+	if (m_is_i2p)
+	{
+		if (!m_i2p_conn || !m_i2p_conn->is_open())
+		{
+			if (auto handler = std::exchange(m_connect_handler, nullptr))
+				post(
+					m_io_service, std::bind(std::move(handler), error_code(errors::no_i2p_router)));
+			return;
+		}
+		ADD_OUTSTANDING_ASYNC("websocket_stream::on_i2p_resolve");
+		m_i2p_conn->async_name_lookup(m_hostname.c_str(),
+			std::bind(&websocket_stream::on_i2p_resolve, shared_from_this(), _1, _2));
+		return;
+	}
+#endif
+
 	bool const use_proxy = m_proxy.type != settings_pack::none && m_proxy.proxy_tracker_connections;
 	m_remote_dns = use_proxy && m_proxy.proxy_hostnames && !is_ip_address(m_hostname)
 		&& (m_proxy.type == settings_pack::socks5 || m_proxy.type == settings_pack::socks5_pw
@@ -187,6 +227,25 @@ void websocket_stream::do_connect(std::string url)
 	else
 		do_resolve(m_hostname, m_port);
 }
+
+#if TORRENT_USE_I2P
+void websocket_stream::on_i2p_resolve(error_code const& ec, char const* destination)
+{
+	COMPLETE_ASYNC("websocket_stream::on_i2p_resolve");
+	if (!m_connect_handler)
+		return;
+	if (ec || destination == nullptr)
+	{
+		if (auto handler = std::exchange(m_connect_handler, nullptr))
+			post(m_io_service,
+				std::bind(std::move(handler),
+					ec ? ec : error_code(i2p_error::key_not_found, i2p_category())));
+		return;
+	}
+	m_i2p_destination = destination;
+	do_tcp_connect({tcp::endpoint()});
+}
+#endif
 
 void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 {
@@ -242,6 +301,47 @@ void websocket_stream::connect_endpoint()
 
 	void* ssl_context =
 		m_url.compare(0, 4, "wss:") == 0 ? static_cast<void*>(m_ssl_context) : nullptr;
+#if TORRENT_USE_I2P
+	if (m_is_i2p)
+	{
+		// A SAM STREAM CONNECT is the transport beneath the WebSocket. The
+		// normal Internet proxy settings do not apply to an I2P destination.
+		if (!m_i2p_conn || !m_i2p_conn->is_open())
+		{
+			if (auto handler = std::exchange(m_connect_handler, nullptr))
+				post(
+					m_io_service, std::bind(std::move(handler), error_code(errors::no_i2p_router)));
+			return;
+		}
+		i2p_stream stream(m_io_service);
+		auto const sam = m_i2p_conn->proxy();
+		stream.set_proxy(sam.hostname, sam.port);
+		stream.set_session_id(m_i2p_conn->session_id());
+		stream.set_destination(m_i2p_destination);
+		stream.set_command(i2p_stream::cmd_connect);
+		m_stream.reset();
+#if TORRENT_USE_SSL
+		if (ssl_context)
+			m_stream.emplace(
+				websocket_socket_type(ssl_stream<i2p_stream>(std::move(stream), *m_ssl_context)));
+		else
+#endif
+			m_stream.emplace(websocket_socket_type(std::move(stream)));
+
+		error_code ssl_ec;
+		setup_websocket_ssl_hostname(m_stream->next_layer(), m_hostname, ssl_ec);
+		if (ssl_ec)
+		{
+			if (auto handler = std::exchange(m_connect_handler, nullptr))
+				post(m_io_service, std::bind(std::move(handler), ssl_ec));
+			return;
+		}
+		ADD_OUTSTANDING_ASYNC("websocket_stream::on_tcp_connect");
+		m_stream->next_layer().async_connect(
+			tcp::endpoint(), std::bind(&websocket_stream::on_tcp_connect, shared_from_this(), _1));
+		return;
+	}
+#endif
 	auto socket = instantiate_connection(m_io_service, proxy, ssl_context, nullptr, false, true);
 
 	// Each endpoint attempt gets a fresh transport. Proxy streams retain

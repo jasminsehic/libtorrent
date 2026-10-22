@@ -3127,6 +3127,15 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 #if TORRENT_USE_I2P
 		if (!i2p_compatible_tracker(ae))
 			return false;
+#if TORRENT_USE_RTC
+		// WebSocket trackers exchange WebRTC offers, whose ICE connectivity
+		// does not use I2P. Never gather ICE candidates for I2P-only torrents
+		// or for I2P-hosted WebSocket trackers without explicit mixed mode.
+		if (!settings().get_bool(settings_pack::allow_i2p_mixed)
+			&& ((is_i2p() || ae.i2p)
+				&& (ae.url.substr(0, 5) == "ws://" || ae.url.substr(0, 6) == "wss://")))
+			return false;
+#endif
 #endif
 		return aux::is_tracker_protocol_supported(ae.url);
 	}
@@ -6549,6 +6558,13 @@ namespace {
 	void torrent::generate_rtc_offers(int const count
 		, std::function<void(error_code const&, std::vector<aux::rtc_offer>)> handler)
 	{
+#if TORRENT_USE_I2P
+		if (is_i2p() && !settings().get_bool(settings_pack::allow_i2p_mixed))
+		{
+			handler(boost::asio::error::operation_not_supported, {});
+			return;
+		}
+#endif
 		// rtc_signaling is created lazily
 		if (!m_rtc_signaling)
 		{
@@ -6563,18 +6579,32 @@ namespace {
 
 	void torrent::on_rtc_offer(aux::rtc_offer const& offer)
 	{
+#if TORRENT_USE_I2P
+		if (is_i2p() && !settings().get_bool(settings_pack::allow_i2p_mixed))
+			return;
+#endif
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_offer(offer);
 	}
 
 	void torrent::on_rtc_answer(aux::rtc_answer const& answer)
 	{
+#if TORRENT_USE_I2P
+		if (is_i2p() && !settings().get_bool(settings_pack::allow_i2p_mixed))
+			return;
+#endif
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_answer(answer);
 	}
 
 	void torrent::on_rtc_stream(aux::rtc_stream_init stream_init)
 	{
+#if TORRENT_USE_I2P
+		// ICE can complete after the user disables mixed-network mode.
+		// Never admit an ordinary RTC peer into an I2P-only torrent.
+		if (is_i2p() && !settings().get_bool(settings_pack::allow_i2p_mixed))
+			return;
+#endif
 		aux::socket_type s(aux::rtc_stream(m_ses.get_context(), stream_init));
 
 		error_code ec;

@@ -24,6 +24,10 @@ see LICENSE file.
 #include "libtorrent/aux_/tracker_manager.hpp"
 #include "libtorrent/aux_/udp_tracker_connection.hpp"
 
+#if TORRENT_USE_I2P
+#include "libtorrent/i2p_stream.hpp"
+#endif
+
 #if TORRENT_USE_RTC
 #include "libtorrent/aux_/websocket_tracker_connection.hpp"
 #endif
@@ -346,6 +350,23 @@ bool is_tracker_protocol_supported(string_view const url)
 			std::shared_ptr<request_callback> cb = c.lock();
 			if (!cb) return;
 
+#if TORRENT_USE_I2P
+			// A .i2p tracker cannot connect without SAM. Check before gathering
+			// WebRTC ICE candidates, which may otherwise contact public STUN.
+			if ((req.kind & tracker_request::i2p)
+				&& (req.i2pconn == nullptr || !req.i2pconn->is_open()))
+			{
+				post(ios,
+					std::bind(&request_callback::tracker_request_error,
+						cb,
+						std::move(req),
+						errors::no_i2p_router,
+						operation_t::connect,
+						"",
+						seconds32(0)));
+				return;
+			}
+#endif
 			int const max_offers = std::max(sett.get_int(settings_pack::max_webtorrent_offers), 0);
 			req.num_want = std::min(req.num_want, max_offers);
 			if (req.num_want == 0)

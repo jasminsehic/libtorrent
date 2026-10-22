@@ -114,6 +114,10 @@ EXPORT int start_websocket_server(
 	bool ssl = false, int min_interval = 30, char const* mode = "normal");
 EXPORT void stop_websocket_server();
 
+// A local SAM v3 mock routes STREAM CONNECT to the WebSocket test tracker.
+EXPORT int start_sam_server(int tracker_port, bool fail_lookup = false);
+EXPORT void stop_sam_server();
+
 EXPORT int start_proxy(int type);
 EXPORT void stop_proxy(int port);
 EXPORT void stop_all_proxies();

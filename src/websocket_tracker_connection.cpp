@@ -93,8 +93,15 @@ void websocket_tracker_connection::start()
 	auto const& settings = m_man.settings();
 	auto const& req = tracker_req();
 	proxy_settings const proxy(settings);
-	m_websocket = std::make_shared<aux::websocket_stream>(
-		m_io_context, m_man.host_resolver(), m_ssl_context, proxy);
+	m_websocket = std::make_shared<aux::websocket_stream>(m_io_context,
+		m_man.host_resolver(),
+		m_ssl_context,
+		proxy
+#if TORRENT_USE_I2P
+		,
+		req.i2pconn
+#endif
+	);
 
 	// in anonymous mode we omit the user agent to mitigate fingerprinting of
 	// the client. Private torrents is an exception because some private

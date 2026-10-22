@@ -1204,6 +1204,7 @@ TEST_EXTRA = Jamfile \
   utf8_latin1_test.txt \
   web_server.py \
   websocket_server.py \
+  sam_server.py \
   socks.py \
   http_proxy.py \
   root1.xml \

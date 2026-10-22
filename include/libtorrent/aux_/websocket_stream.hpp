@@ -48,11 +48,19 @@ namespace libtorrent::aux {
 using websocket_socket_type = polymorphic_socket<tcp::socket,
 	socks5_stream,
 	http_stream
+#if TORRENT_USE_I2P
+	,
+	i2p_stream
+#endif
 #if TORRENT_USE_SSL
 	,
 	ssl_stream<tcp::socket>,
 	ssl_stream<socks5_stream>,
 	ssl_stream<http_stream>
+#if TORRENT_USE_I2P
+	,
+	ssl_stream<i2p_stream>
+#endif
 #endif
 	>;
 
@@ -167,8 +175,15 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 	using write_handler = std::function<void(error_code const&, std::size_t)>;
 
 	websocket_stream(io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx);
-	websocket_stream(
-		io_context& ios, resolver_interface& resolver, ssl::context* ssl_ctx, proxy_settings proxy);
+	websocket_stream(io_context& ios,
+		resolver_interface& resolver,
+		ssl::context* ssl_ctx,
+		proxy_settings proxy
+#if TORRENT_USE_I2P
+		,
+		i2p_connection* i2p_conn = nullptr
+#endif
+	);
 
 	~websocket_stream() = default;
 	websocket_stream& operator=(websocket_stream const&) = delete;
@@ -248,6 +263,9 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 private:
 	void do_connect(std::string url);
 	void do_resolve(std::string hostname, std::uint16_t port);
+#if TORRENT_USE_I2P
+	void on_i2p_resolve(error_code const& ec, char const* destination);
+#endif
 	void on_resolve(error_code const& ec, std::vector<address> const& addresses);
 	void do_tcp_connect(std::vector<tcp::endpoint> endpoints);
 	void connect_endpoint();
@@ -265,6 +283,11 @@ private:
 	resolver_interface& m_resolver;
 	ssl::context* m_ssl_context;
 	proxy_settings m_proxy;
+#if TORRENT_USE_I2P
+	i2p_connection* m_i2p_conn = nullptr;
+	std::string m_i2p_destination;
+	bool m_is_i2p = false;
+#endif
 
 	using stream_type = websocket::stream<websocket_socket_type>;
 	std::optional<stream_type> m_stream;
