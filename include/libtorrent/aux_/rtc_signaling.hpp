@@ -138,6 +138,7 @@ private:
 
 	private:
 		int m_count;
+		error_code m_error;
 		offers_handler m_handler;
 		std::vector<rtc_offer> m_offers;
 	};
