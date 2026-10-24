@@ -10,15 +10,24 @@ from datetime import datetime
 # Remove '.' from sys.path or we try to import the http.py module
 sys.path = sys.path[1:]
 
-import websockets
+from websockets.legacy.server import serve
 
 logger = logging.getLogger('websockets')
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+connections = 0
+
+
 async def handle(websocket):
+    global connections
+    connections += 1
+    connection_index = connections
     # the tracker behavior to simulate:
+    # silent: never respond
+    # silent-first-connection: ignore announces on the first connection only
+    # malformed-first-connection: send invalid responses on the first connection
     # normal: respond to every announce
     # failure: respond to every announce with a failure reason
     # stale-failure: respond normally, then send a failure reason that isn't
@@ -40,6 +49,13 @@ async def handle(websocket):
                 file=sys.stderr)
 
             request = json.loads(message)
+            if mode == "silent":
+                continue
+            if mode == "silent-first-connection" and connection_index == 1:
+                continue
+            if mode == "malformed-first-connection" and connection_index == 1:
+                await websocket.send(json.dumps({"action": "announce"}))
+                continue
             info_hash = request["info_hash"]
 
             if mode == 'failure':
@@ -79,7 +95,7 @@ async def main() -> None:
     else:
         ssl_context = None
 
-    server = await websockets.serve(handle, '127.0.0.1', 0, ssl=ssl_context)
+    server = await serve(handle, '127.0.0.1', 0, ssl=ssl_context)
     port = server.sockets[0].getsockname()[1]
     print(f'LISTENING_PORT {port}')
     sys.stdout.flush()
