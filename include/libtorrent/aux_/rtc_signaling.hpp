@@ -31,6 +31,7 @@ see LICENSE file.
 #include <memory>
 #include <optional>
 #include <queue>
+#include <cstdint>
 #include <vector>
 #include <chrono>
 #include <unordered_map>
@@ -113,7 +114,7 @@ private:
 	rtc_offer_id generate_offer_id() const;
 
 	connection& create_connection(rtc_offer_id const& offer_id, description_handler handler);
-	void on_generated_offer(error_code const& ec, rtc_offer offer);
+	void on_generated_offer(std::uint64_t batch_id, error_code const& ec, rtc_offer offer);
 	void on_generated_answer(error_code const& ec, rtc_answer answer, rtc_offer offer);
 	void on_data_channel(error_code const& ec, rtc_offer_id offer_id, std::shared_ptr<rtc::DataChannel> dc);
 
@@ -129,8 +130,9 @@ private:
 	{
 		offer_batch(int count, offers_handler handler);
 
-		void add(error_code const& ec, rtc_offer offer);
+		bool add(error_code const& ec, rtc_offer offer);
 		bool is_complete() const;
+		void complete();
 
 	private:
 		int m_count;
@@ -138,7 +140,8 @@ private:
 		std::vector<rtc_offer> m_offers;
 	};
 
-	std::queue<offer_batch> m_offer_batches;
+	std::unordered_map<std::uint64_t, offer_batch> m_offer_batches;
+	std::uint64_t m_next_batch_id = 1;
 };
 
 }

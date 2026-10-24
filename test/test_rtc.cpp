@@ -439,10 +439,47 @@ void test_write_exact_chunk_boundary()
 	sig2->close();
 }
 
+// A later offer batch must not be blocked or consume results belonging to
+// an earlier batch whose ICE gathering is still pending.
+void test_offer_batches_are_independent()
+{
+	using udp = boost::asio::ip::udp;
+	udp::socket silent_stun(io_context,
+		udp::endpoint(boost::asio::ip::make_address_v4("127.0.0.1"), 0));
+
+	session_mock ses(io_context);
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 10);
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {});
+
+	bool slow_done = false;
+	int fast_calls = 0;
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server,
+		"127.0.0.1:" + std::to_string(silent_stun.local_endpoint().port()));
+	sig->generate_offers(2, [&](error_code const&, std::vector<rtc_offer> const&) {
+		slow_done = true;
+	});
+
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server, "");
+	sig->generate_offers(2, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++fast_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 2);
+		TEST_CHECK(!slow_done);
+		success = true;
+	});
+
+	run_test();
+	TEST_EQUAL(fast_calls, 1);
+	sig->close();
+}
+
 } // namespace
 
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
 TORRENT_TEST(signaling_offers) { test_offers(); }
+TORRENT_TEST(signaling_offer_batches_are_independent) { test_offer_batches_are_independent(); }
 TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }
 TORRENT_TEST(write_exact_chunk_boundary) { test_write_exact_chunk_boundary(); }

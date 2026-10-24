@@ -146,13 +146,20 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling generating %d offers", count);
 #endif
-	m_offer_batches.emplace(count, std::move(handler));
+	if (count <= 0)
+	{
+		handler(error_code{}, {});
+		return;
+	}
+
+	std::uint64_t const batch_id = m_next_batch_id++;
+	m_offer_batches.emplace(batch_id, offer_batch(count, std::move(handler)));
 	while (count--)
 	{
 		rtc_offer_id offer_id = generate_offer_id();
 		peer_id pid = m_torrent->pid();
 
-		auto& conn = create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid]
+		auto& conn = create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid, batch_id]
 			(error_code const& ec, std::string sdp)
 		{
 			auto self = weak_this.lock();
@@ -162,6 +169,7 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 			rtc_offer offer{std::move(offer_id), std::move(pid), std::move(sdp), {}};
 			post(io_context, std::bind(&rtc_signaling::on_generated_offer
 				, std::move(self)
+				, batch_id
 				, ec
 				, std::move(offer)
 			));
@@ -382,16 +390,20 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	return it->second;
 }
 
-void rtc_signaling::on_generated_offer(error_code const& ec, rtc_offer offer)
+void rtc_signaling::on_generated_offer(std::uint64_t const batch_id
+	, error_code const& ec, rtc_offer offer)
 {
-#ifndef TORRENT_DISABLE_LOGGING
-	debug_log("*** RTC signaling generated offer");
-#endif
-	while (!m_offer_batches.empty() && m_offer_batches.front().is_complete())
-		m_offer_batches.pop();
+	auto const it = m_offer_batches.find(batch_id);
+	if (it == m_offer_batches.end())
+		return;
 
-	if (!m_offer_batches.empty())
-		m_offer_batches.front().add(ec, std::forward<rtc_offer>(offer));
+	if (!it->second.add(ec, std::move(offer)))
+		return;
+
+	// Remove the batch before invoking its callback, which may re-enter here.
+	offer_batch batch = std::move(it->second);
+	m_offer_batches.erase(it);
+	batch.complete();
 }
 
 void rtc_signaling::on_generated_answer(error_code const& ec, rtc_answer answer, rtc_offer offer)
@@ -446,21 +458,23 @@ void rtc_signaling::on_data_channel(error_code const& ec
 rtc_signaling::offer_batch::offer_batch(int count, rtc_signaling::offers_handler handler)
 	: m_count(count)
 	, m_handler(std::move(handler))
-{
-	if (m_count == 0) m_handler(error_code{}, {});
-}
+{}
 
-void rtc_signaling::offer_batch::add(error_code const& ec, rtc_offer offer)
+bool rtc_signaling::offer_batch::add(error_code const& ec, rtc_offer offer)
 {
 	if (!ec) m_offers.push_back(std::move(offer));
 	else --m_count;
-
-	if (is_complete()) m_handler(ec, m_offers);
+	return is_complete();
 }
 
 bool rtc_signaling::offer_batch::is_complete() const
 {
 	return int(m_offers.size()) == m_count;
+}
+
+void rtc_signaling::offer_batch::complete()
+{
+	m_handler(error_code{}, m_offers);
 }
 
 #ifndef TORRENT_DISABLE_LOGGING
