@@ -38,6 +38,7 @@ see LICENSE file.
 namespace rtc {
 	class PeerConnection;
 	class DataChannel;
+	struct Configuration;
 }
 
 namespace libtorrent {
@@ -75,8 +76,12 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 {
 	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
 	using rtc_stream_handler = std::function<void(rtc_stream_init)>;
+	using rtc_configuration_hook = std::function<void(rtc::Configuration&)>;
+	using description_handler = std::function<void(error_code const&, std::string const& description)>;
+	using offer_creation_hook = std::function<void(description_handler const&)>;
 
-	explicit rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler);
+	explicit rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler
+		, rtc_configuration_hook configuration_hook = {}, offer_creation_hook creation_hook = {});
 	~rtc_signaling();
 	rtc_signaling& operator=(rtc_signaling const&) = delete;
 	rtc_signaling(rtc_signaling const&) = delete;
@@ -96,7 +101,6 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 #endif
 
 private:
-	using description_handler = std::function<void(error_code const&, std::string const& description)>;
 
 	struct connection
 	{
@@ -120,6 +124,8 @@ private:
 	io_context& m_io_context;
 	torrent* m_torrent;
 	rtc_stream_handler m_rtc_stream_handler;
+	rtc_configuration_hook m_rtc_configuration_hook;
+	offer_creation_hook m_offer_creation_hook;
 
 	std::unordered_map<rtc_offer_id, connection, boost::hash<rtc_offer_id>> m_connections;
 	int m_num_incoming_connections = 0;
