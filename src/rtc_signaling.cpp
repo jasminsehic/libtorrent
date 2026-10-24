@@ -493,9 +493,14 @@ rtc_signaling::offer_batch::offer_batch(int count, rtc_signaling::offers_handler
 void rtc_signaling::offer_batch::add(error_code const& ec, rtc_offer offer)
 {
 	if (!ec) m_offers.push_back(std::move(offer));
-	else --m_count;
+	else
+	{
+		--m_count;
+		m_error = ec;
+	}
 
-	if (is_complete()) m_handler(ec, m_offers);
+	if (is_complete())
+		m_handler(m_offers.empty() ? m_error : error_code{}, m_offers);
 }
 
 bool rtc_signaling::offer_batch::is_complete() const
