@@ -17,6 +17,8 @@ see LICENSE file.
 #include "libtorrent/aux_/escape_string.hpp" // for base64encode
 #include "libtorrent/aux_/socket_io.hpp" // for print_endpoint
 
+#include <functional>
+
 namespace libtorrent::aux {
 
 class http_stream : public proxy_base
@@ -29,6 +31,16 @@ public:
 	{}
 
 	void set_no_connect(bool c) { m_no_connect = c; }
+
+	void set_diagnostic_callback(diagnostic_callback callback)
+	{
+		m_diagnostic_callback = std::move(callback);
+	}
+
+	void log_diagnostic(std::string const& stage, error_code const& ec) const
+	{
+		if (m_diagnostic_callback) m_diagnostic_callback(stage, ec);
+	}
 
 	void set_username(std::string const& user
 		, std::string const& password)
@@ -60,6 +72,7 @@ public:
 	void async_connect(endpoint_type const& endpoint, Handler const& handler)
 	{
 		m_remote_endpoint = endpoint;
+		log_diagnostic("HTTP proxy: resolving proxy server hostname", error_code{});
 
 		// the connect is split up in the following steps:
 		// 1. resolve name of proxy server
@@ -79,9 +92,11 @@ private:
 	void name_lookup(error_code const& e, tcp::resolver::results_type ips
 		, Handler h)
 	{
+		log_diagnostic("HTTP proxy: proxy hostname resolution", e);
 		if (handle_error(e, h)) return;
 
 		auto i = ips.begin();
+		log_diagnostic("HTTP proxy: connecting TCP socket to proxy", error_code{});
 		m_sock.async_connect(i->endpoint(), wrap_allocator(
 			[this](error_code const& ec, Handler hn) {
 				connected(ec, std::move(hn));
@@ -91,6 +106,7 @@ private:
 	template <typename Handler>
 	void connected(error_code const& e, Handler h)
 	{
+		log_diagnostic("HTTP proxy: TCP connection to proxy completed", e);
 		if (handle_error(e, h)) return;
 
 		using namespace libtorrent::aux;
@@ -121,6 +137,7 @@ private:
 				m_user + ":" + m_password) + "\r\n", p);
 		}
 		write_string("\r\n", p);
+		log_diagnostic("HTTP proxy: sending CONNECT request", error_code{});
 		async_write(m_sock, boost::asio::buffer(m_buffer), wrap_allocator(
 			[this](error_code const& ec, std::size_t, Handler hn) {
 				handshake1(ec, std::move(hn));
@@ -130,8 +147,10 @@ private:
 	template <typename Handler>
 	void handshake1(error_code const& e, Handler h)
 	{
+		log_diagnostic("HTTP proxy: CONNECT request write completed", e);
 		if (handle_error(e, h)) return;
 
+		log_diagnostic("HTTP proxy: waiting for CONNECT response", error_code{});
 		// read one byte from the socket
 		m_buffer.resize(1);
 		async_read(m_sock, boost::asio::buffer(m_buffer), wrap_allocator(
@@ -143,6 +162,7 @@ private:
 	template <typename Handler>
 	void handshake2(error_code const& e, Handler h)
 	{
+		if (e) log_diagnostic("HTTP proxy: reading CONNECT response", e);
 		if (handle_error(e, h)) return;
 
 		std::size_t const read_pos = m_buffer.size();
@@ -170,6 +190,7 @@ private:
 			char const* status = std::strchr(m_buffer.data(), ' ');
 			if (status == nullptr)
 			{
+				log_diagnostic("HTTP proxy: malformed CONNECT response", boost::asio::error::operation_not_supported);
 				h(boost::asio::error::operation_not_supported);
 				error_code ec;
 				close(ec);
@@ -181,12 +202,17 @@ private:
 			auto const code = parse_decimal({status, status_len});
 			if (!code || *code != 200)
 			{
+				std::string status_message = "HTTP proxy: CONNECT response status ";
+				status_message += code ? std::to_string(*code) : "invalid";
+				status_message += " (expected 200)";
+				log_diagnostic(status_message, boost::asio::error::operation_not_supported);
 				h(boost::asio::error::operation_not_supported);
 				error_code ec;
 				close(ec);
 				return;
 			}
 
+			log_diagnostic("HTTP proxy: CONNECT tunnel established (status 200)", error_code{});
 			h(e);
 			std::vector<char>().swap(m_buffer);
 			return;
@@ -206,6 +232,7 @@ private:
 	std::string m_user;
 	std::string m_password;
 	std::string m_host;
+	diagnostic_callback m_diagnostic_callback;
 
 	// this is true if the connection is HTTP based and
 	// want to talk directly to the proxy
