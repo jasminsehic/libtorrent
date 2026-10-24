@@ -463,7 +463,11 @@ rtc_signaling::offer_batch::offer_batch(int count, rtc_signaling::offers_handler
 bool rtc_signaling::offer_batch::add(error_code const& ec, rtc_offer offer)
 {
 	if (!ec) m_offers.push_back(std::move(offer));
-	else --m_count;
+	else
+	{
+		--m_count;
+		m_error = ec;
+	}
 	return is_complete();
 }
 
@@ -474,7 +478,7 @@ bool rtc_signaling::offer_batch::is_complete() const
 
 void rtc_signaling::offer_batch::complete()
 {
-	m_handler(error_code{}, m_offers);
+	m_handler(m_offers.empty() ? m_error : error_code{}, m_offers);
 }
 
 #ifndef TORRENT_DISABLE_LOGGING
