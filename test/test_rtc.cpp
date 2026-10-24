@@ -460,6 +460,39 @@ void test_offer_creation_failure()
 	sig->close();
 }
 
+// Simulate ICE gathering completing before createDataChannel setup throws.
+// The already queued description must not win over synchronous failure.
+void test_offer_creation_failure_ignores_queued_description()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int calls = 0;
+	int injection_count = 0;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor,
+		[](rtc_stream_init) {}, rtc_signaling::rtc_configuration_hook{},
+		[&](rtc_signaling::description_handler const& on_description) {
+			++injection_count;
+			// Queue two successful descriptions before setup fails. Without
+			// the completion guard, the first one would complete the batch.
+			on_description(error_code{}, "queued-description");
+			on_description(error_code{}, "duplicate-description");
+			throw std::runtime_error("simulated post-DataChannel failure");
+		});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		TEST_EQUAL(ec, boost::system::errc::make_error_code(
+			boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(injection_count, 1);
+	TEST_EQUAL(calls, 1);
+	sig->close();
+}
+
 // A real port conflict must not poison the signaling object. Once the
 // occupied UDP port is released, generating offers must work again.
 void test_offer_udp_port_exhaustion_recovery()
@@ -528,6 +561,7 @@ void test_offer_creation_partial_failure()
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
 TORRENT_TEST(signaling_offers) { test_offers(); }
 TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
+TORRENT_TEST(signaling_offer_creation_failure_ignores_queued_description) { test_offer_creation_failure_ignores_queued_description(); }
 TORRENT_TEST(signaling_offer_udp_port_exhaustion_recovery) { test_offer_udp_port_exhaustion_recovery(); }
 TORRENT_TEST(signaling_offer_creation_partial_failure) { test_offer_creation_partial_failure(); }
 TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
