@@ -64,7 +64,6 @@ void websocket_stream::close()
 	}
 
 	m_keepalive_timer.cancel();
-	m_awaiting_pong = false;
 
 	if (m_open)
 	{
