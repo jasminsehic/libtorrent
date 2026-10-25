@@ -3118,7 +3118,12 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 #if TORRENT_USE_I2P
 	bool torrent::i2p_compatible_tracker(aux::announce_entry const& ae) const
 	{
-		return ae.i2p || !is_i2p() || settings().get_bool(settings_pack::allow_i2p_mixed);
+		if (!is_i2p() || settings().get_bool(settings_pack::allow_i2p_mixed))
+			return true;
+
+		// WebRTC ICE does not use I2P, so strict I2P torrents cannot
+		// use WebSocket trackers, including those with .i2p hostnames.
+		return ae.i2p && ae.url.substr(0, 5) != "ws://" && ae.url.substr(0, 6) != "wss://";
 	}
 #endif
 
@@ -6546,9 +6551,23 @@ namespace {
 	}
 
 #if TORRENT_USE_RTC
+	bool torrent::rtc_allowed() const
+	{
+#if TORRENT_USE_I2P
+		if (is_i2p() && !settings().get_bool(settings_pack::allow_i2p_mixed))
+			return false;
+#endif
+		return true;
+	}
+
 	void torrent::generate_rtc_offers(int const count
 		, std::function<void(error_code const&, std::vector<aux::rtc_offer>)> handler)
 	{
+		if (!rtc_allowed())
+		{
+			handler(boost::asio::error::operation_not_supported, {});
+			return;
+		}
 		// rtc_signaling is created lazily
 		if (!m_rtc_signaling)
 		{
@@ -6563,18 +6582,26 @@ namespace {
 
 	void torrent::on_rtc_offer(aux::rtc_offer const& offer)
 	{
+		if (!rtc_allowed())
+			return;
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_offer(offer);
 	}
 
 	void torrent::on_rtc_answer(aux::rtc_answer const& answer)
 	{
+		if (!rtc_allowed())
+			return;
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_answer(answer);
 	}
 
 	void torrent::on_rtc_stream(aux::rtc_stream_init stream_init)
 	{
+		// A policy change may race with a completed ICE negotiation.
+		// Never admit a new WebRTC peer after direct ICE is disallowed.
+		if (!rtc_allowed())
+			return;
 		aux::socket_type s(aux::rtc_stream(m_ses.get_context(), stream_init));
 
 		error_code ec;
