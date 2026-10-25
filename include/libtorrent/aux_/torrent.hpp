@@ -810,6 +810,7 @@ namespace libtorrent::aux {
 		void update_auto_sequential();
 	private:
 #if TORRENT_USE_RTC
+		bool rtc_allowed() const;
 		void generate_rtc_offers(int count
 			, std::function<void(error_code const&, std::vector<aux::rtc_offer>)> handler) override;
 		void on_rtc_offer(aux::rtc_offer const& offer) override;
