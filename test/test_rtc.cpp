@@ -574,6 +574,65 @@ void test_offer_udp_port_exhaustion_recovery()
 	sig->close();
 }
 
+// Two usable offers must still be returned if the final completion fails.
+// Post successful descriptions before a synchronous failure, so the failed
+// offer is deterministically the last completion processed by io_context.
+void test_offer_creation_partial_failure()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int attempts = 0;
+	int descriptions = 0;
+	int callbacks = 0;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor,
+		[](rtc_stream_init) {},
+		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
+			if (++attempts == 3)
+				throw std::runtime_error("simulated final offer failure");
+			++descriptions;
+			on_description(error_code{}, "simulated-successful-description");
+		});
+	sig->generate_offers(3, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 2);
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(attempts, 3);
+	TEST_EQUAL(descriptions, 2);
+	TEST_EQUAL(callbacks, 1);
+	sig->close();
+}
+
+// When no offer can be created, the batch must still report failure.
+void test_offer_creation_all_failed()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int attempts = 0;
+	int callbacks = 0;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor,
+		[](rtc_stream_init) {},
+		[&attempts](rtc::Configuration&, rtc_signaling::description_handler const&) {
+			++attempts;
+			throw std::runtime_error("simulated offer failure");
+		});
+	sig->generate_offers(3, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_EQUAL(ec, boost::system::errc::make_error_code(
+			boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(attempts, 3);
+	TEST_EQUAL(callbacks, 1);
+	sig->close();
+}
+
 } // namespace
 
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
@@ -581,6 +640,8 @@ TORRENT_TEST(signaling_offers) { test_offers(); }
 TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
 TORRENT_TEST(signaling_offer_creation_failure_ignores_queued_description) { test_offer_creation_failure_ignores_queued_description(); }
 TORRENT_TEST(signaling_offer_duplicate_description_does_not_complete_next_batch) { test_offer_duplicate_description_does_not_complete_next_batch(); }
+TORRENT_TEST(signaling_offer_creation_partial_failure) { test_offer_creation_partial_failure(); }
+TORRENT_TEST(signaling_offer_creation_all_failed) { test_offer_creation_all_failed(); }
 TORRENT_TEST(signaling_offer_udp_port_exhaustion_recovery) { test_offer_udp_port_exhaustion_recovery(); }
 TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }
