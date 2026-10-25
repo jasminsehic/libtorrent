@@ -89,10 +89,12 @@ static rtc_log_appender appender;
 
 }
 
-rtc_signaling::rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler)
+rtc_signaling::rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler
+	, rtc_configuration_hook configuration_hook)
 	: m_io_context(ioc)
 	, m_torrent(t)
 	, m_rtc_stream_handler(std::move(handler))
+	, m_rtc_configuration_hook(std::move(configuration_hook))
 {
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling created");
@@ -152,7 +154,10 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 		rtc_offer_id offer_id = generate_offer_id();
 		peer_id pid = m_torrent->pid();
 
-		auto& conn = create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid]
+		connection* conn = nullptr;
+		try
+		{
+			conn = &create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid]
 			(error_code const& ec, std::string sdp)
 		{
 			auto self = weak_this.lock();
@@ -165,9 +170,25 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 				, ec
 				, std::move(offer)
 			));
-		});
+			});
+		}
+		catch (std::exception const& e)
+		{
+			TORRENT_UNUSED(e);
+#ifndef TORRENT_DISABLE_LOGGING
+			debug_log("*** RTC signaling could not create peer connection: %s", e.what());
+#endif
+			// This attempt failed before create_connection returned. Account
+			// for it without aborting the rest of the offer batch.
+			post(m_io_context, [self = shared_from_this(), offer_id, pid] {
+				self->on_generated_offer(
+					errc::make_error_code(errc::resource_unavailable_try_again),
+					rtc_offer{offer_id, pid, {}, {}});
+			});
+			continue;
+		}
 
-		auto dc = conn.peer_connection->createDataChannel("webtorrent");
+		auto dc = conn->peer_connection->createDataChannel("webtorrent");
 		dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
 		{
 			// Warning: this is called from another thread
@@ -185,7 +206,7 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 		});
 
 		// We need to maintain the DataChannel alive
-		conn.data_channel = std::move(dc);
+		conn->data_channel = std::move(dc);
 	}
 }
 
@@ -306,6 +327,8 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	std::string stun_server = m_torrent->settings().get_str(settings_pack::webtorrent_stun_server);
 	if (!stun_server.empty())
 		config.iceServers.emplace_back(std::move(stun_server));
+	if (m_rtc_configuration_hook)
+		m_rtc_configuration_hook(config);
 
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
 	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler]
