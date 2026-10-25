@@ -447,7 +447,7 @@ void test_offer_creation_failure()
 		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
 	int callbacks = 0;
 	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {},
-		[](rtc::Configuration&) { throw std::runtime_error("simulated allocation failure"); });
+		[](rtc::Configuration&, rtc_signaling::description_handler const&) { throw std::runtime_error("simulated allocation failure"); });
 	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
 		++callbacks;
 		TEST_EQUAL(ec, boost::system::errc::make_error_code(
@@ -457,6 +457,81 @@ void test_offer_creation_failure()
 	});
 	run_test();
 	TEST_EQUAL(callbacks, 1);
+	sig->close();
+}
+
+// If a description is queued before setup fails, failure must win.
+// A duplicate description must not be counted as another offer completion.
+void test_offer_creation_failure_ignores_queued_description()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int calls = 0;
+	int injection_count = 0;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor,
+		[](rtc_stream_init) {},
+		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
+			++injection_count;
+			// Queue two successful descriptions before setup fails. Without
+			// the completion guard, the first one would complete the batch.
+			on_description(error_code{}, "queued-description");
+			on_description(error_code{}, "duplicate-description");
+			throw std::runtime_error("simulated post-DataChannel failure");
+		});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		TEST_EQUAL(ec, boost::system::errc::make_error_code(
+			boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(injection_count, 1);
+	TEST_EQUAL(calls, 1);
+	sig->close();
+}
+
+// An extra description from one offer must not consume the next batch.
+void test_offer_duplicate_description_does_not_complete_next_batch()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int injections = 0;
+	int first_calls = 0;
+	int second_calls = 0;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor,
+		[](rtc_stream_init) {},
+		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
+			++injections;
+			if (injections == 1) {
+				on_description(error_code{}, "first-description");
+				on_description(error_code{}, "duplicate-description");
+			} else if (injections == 2) {
+				on_description(error_code{}, "second-description");
+			}
+		});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++first_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		if (!offers.empty()) TEST_CHECK(offers[0].sdp == "first-description");
+		if (first_calls == 1 && second_calls == 1) success = true;
+	});
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++second_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		if (!offers.empty()) TEST_CHECK(offers[0].sdp == "second-description");
+		if (first_calls == 1 && second_calls == 1) success = true;
+	});
+	run_test();
+	TEST_EQUAL(injections, 2);
+	TEST_EQUAL(first_calls, 1);
+	TEST_EQUAL(second_calls, 1);
 	sig->close();
 }
 
@@ -472,7 +547,7 @@ void test_offer_udp_port_exhaustion_recovery()
 	aux::torrent tor(ses, false,
 		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
 	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {},
-		[port](rtc::Configuration& config) {
+		[port](rtc::Configuration& config, rtc_signaling::description_handler const&) {
 			config.bindAddress = std::string("127.0.0.1");
 			config.portRangeBegin = port;
 			config.portRangeEnd = port;
@@ -504,6 +579,8 @@ void test_offer_udp_port_exhaustion_recovery()
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
 TORRENT_TEST(signaling_offers) { test_offers(); }
 TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
+TORRENT_TEST(signaling_offer_creation_failure_ignores_queued_description) { test_offer_creation_failure_ignores_queued_description(); }
+TORRENT_TEST(signaling_offer_duplicate_description_does_not_complete_next_batch) { test_offer_duplicate_description_does_not_complete_next_batch(); }
 TORRENT_TEST(signaling_offer_udp_port_exhaustion_recovery) { test_offer_udp_port_exhaustion_recovery(); }
 TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }

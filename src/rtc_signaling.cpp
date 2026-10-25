@@ -154,59 +154,75 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 		rtc_offer_id offer_id = generate_offer_id();
 		peer_id pid = m_torrent->pid();
 
-		connection* conn = nullptr;
+		// Both the description callback and the synchronous setup-failure path
+		// may report this offer. All accesses to this flag run on the
+		// libtorrent network thread (the RTC callbacks post to m_io_context).
+		std::shared_ptr<bool> reported;
 		try
 		{
-			conn = &create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid]
-			(error_code const& ec, std::string sdp)
-		{
-			auto self = weak_this.lock();
-			if (!self) return;
+			reported = std::make_shared<bool>(false);
+			description_handler const on_description =
+				[weak_this = weak_from_this(), offer_id, pid, reported]
+				(error_code const& ec, std::string const& sdp)
+			{
+				auto self = weak_this.lock();
+				if (!self) return;
 
-			auto& io_context = self->m_io_context;
-			rtc_offer offer{std::move(offer_id), std::move(pid), std::move(sdp), {}};
-			post(io_context, std::bind(&rtc_signaling::on_generated_offer
-				, std::move(self)
-				, ec
-				, std::move(offer)
-			));
+				// Never report directly on a libdatachannel worker thread. The
+				// failure path may have invalidated this offer before we run.
+				// Capture the context before moving self into the callback;
+				// function argument evaluation order is not guaranteed.
+				auto& io_context = self->m_io_context;
+				post(io_context,
+					[signaling = std::move(self), reported, offer_id, pid, ec, description = std::string(sdp)]() mutable
+					{
+						if (std::exchange(*reported, true)) return;
+						signaling->on_generated_offer(ec, rtc_offer{offer_id, pid, std::move(description), {}});
+					});
+			};
+
+			auto& conn = create_connection(offer_id, on_description);
+			auto dc = conn.peer_connection->createDataChannel("webtorrent");
+			dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
+			{
+				// Warning: this is called from another thread
+				auto self = weak_this.lock();
+				auto dc_ = weak_dc.lock();
+				if (!self || !dc_) return;
+
+				auto& io_context = self->m_io_context;
+				post(io_context, std::bind(&rtc_signaling::on_data_channel
+					, std::move(self)
+					, error_code{}
+					, std::move(offer_id)
+					, std::move(dc_)
+				));
 			});
+
+			// We need to maintain the DataChannel alive
+			conn.data_channel = std::move(dc);
+
+
 		}
 		catch (std::exception const& e)
 		{
 			TORRENT_UNUSED(e);
+			// Synchronous failure takes precedence over any description
+			// already queued by libdatachannel for this offer.
+			if (reported) *reported = true;
 #ifndef TORRENT_DISABLE_LOGGING
-			debug_log("*** RTC signaling could not create peer connection: %s", e.what());
+			debug_log("*** RTC signaling could not create offer: %s", e.what());
 #endif
-			// This attempt failed before create_connection returned. Account
-			// for it without aborting the rest of the offer batch.
-			post(m_io_context, [self = shared_from_this(), offer_id, pid] {
-				self->on_generated_offer(
-					errc::make_error_code(errc::resource_unavailable_try_again),
-					rtc_offer{offer_id, pid, {}, {}});
-			});
-			continue;
+			// Construction can fail before or after the connection is inserted.
+			// In either case, account for the attempted offer.
+			m_connections.erase(offer_id);
+			post(m_io_context,
+				[self = shared_from_this(), offer_id, pid] {
+					self->on_generated_offer(
+						errc::make_error_code(errc::resource_unavailable_try_again),
+						rtc_offer{offer_id, pid, {}, {}});
+				});
 		}
-
-		auto dc = conn->peer_connection->createDataChannel("webtorrent");
-		dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
-		{
-			// Warning: this is called from another thread
-			auto self = weak_this.lock();
-			auto dc_ = weak_dc.lock();
-			if (!self || !dc_) return;
-
-			auto& io_context = self->m_io_context;
-			post(io_context, std::bind(&rtc_signaling::on_data_channel
-				, std::move(self)
-				, error_code{}
-				, std::move(offer_id)
-				, std::move(dc_)
-			));
-		});
-
-		// We need to maintain the DataChannel alive
-		conn->data_channel = std::move(dc);
 	}
 }
 
@@ -328,7 +344,7 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	if (!stun_server.empty())
 		config.iceServers.emplace_back(std::move(stun_server));
 	if (m_rtc_configuration_hook)
-		m_rtc_configuration_hook(config);
+		m_rtc_configuration_hook(config, handler);
 
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
 	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler]
