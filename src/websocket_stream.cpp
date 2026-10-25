@@ -54,9 +54,17 @@ websocket_stream::websocket_stream(io_context& ios
 void websocket_stream::close()
 {
 	if (auto handler = std::exchange(m_connect_handler, nullptr))
+	{
 		post(m_io_service, std::bind(std::move(handler), error::operation_aborted));
 
+		// abort the connection attempt in progress (TCP connect, TLS or
+		// WebSocket handshake), rather than letting it run to completion
+		// (or hang, if the server never responds)
+		close_socket();
+	}
+
 	m_keepalive_timer.cancel();
+	m_awaiting_pong = false;
 
 	if (m_open)
 	{
@@ -139,6 +147,10 @@ void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
 {
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
+
+	// the connection attempt was aborted by close()
+	if (!m_connect_handler)
+		return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -176,6 +188,10 @@ void websocket_stream::do_tcp_connect(std::vector<tcp::endpoint> endpoints)
 void websocket_stream::on_tcp_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
+
+	// the connection attempt was aborted by close()
+	if (!m_connect_handler)
+		return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
