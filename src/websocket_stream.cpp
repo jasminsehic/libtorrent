@@ -143,6 +143,18 @@ void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 		, std::bind(&websocket_stream::on_resolve, shared_from_this(), _1, _2));
 }
 
+// Bypass the WebSocket close handshake so a silent peer cannot leave the
+// outstanding read pending indefinitely. Select the TCP socket beneath either
+// the plain WebSocket stream or the TLS and WebSocket layers.
+void websocket_stream::close_socket()
+{
+	error_code ignore;
+	std::visit(
+		rtc::overloaded{[&](stream_type& stream) { stream.next_layer().close(ignore); },
+			[&](ssl_stream_type& stream) { stream.next_layer().next_layer().close(ignore); }},
+		m_stream);
+}
+
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
 {
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
@@ -234,6 +246,10 @@ void websocket_stream::do_ssl_handshake()
 void websocket_stream::on_ssl_handshake(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_ssl_handshake");
+
+	// the connection attempt was aborted by close()
+	if (!m_connect_handler)
+		return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
