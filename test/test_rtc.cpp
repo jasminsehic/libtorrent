@@ -139,6 +139,53 @@ void test_offers()
 	sig->close();
 }
 
+// A connection timeout must complete the offer batch even when ICE gathering
+// never finishes. A silent local STUN endpoint makes this deterministic
+// without depending on a public STUN service.
+void test_offer_timeout_completes_batch()
+{
+	session_mock ses(io_context);
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 1);
+
+	boost::asio::ip::udp::socket stun_sink(
+		io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server,
+		"stun:127.0.0.1:" + std::to_string(stun_sink.local_endpoint().port()));
+
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int callbacks = 0;
+	error_code result;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		result = ec;
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(callbacks, 1);
+	TEST_EQUAL(result, boost::asio::error::timed_out);
+
+	// Drain late RTC callbacks to check that the batch stays completed once.
+	boost::asio::steady_timer settle(io_context);
+	settle.expires_after(2s);
+	bool settled = false;
+	settle.async_wait([&settled](error_code const& ec) { settled = !ec; });
+	while (!settled)
+	{
+		if (io_context.stopped())
+			io_context.restart();
+		io_context.run_one();
+	}
+	TEST_EQUAL(callbacks, 1);
+
+	sig->close();
+	stun_sink.close();
+}
+
 void test_connectivity()
 {
 	time_point const start_time = clock_type::now();
@@ -677,6 +724,7 @@ TORRENT_TEST(signaling_offer_duplicate_description_does_not_complete_next_batch)
 }
 TORRENT_TEST(signaling_offer_creation_partial_failure) { test_offer_creation_partial_failure(); }
 TORRENT_TEST(signaling_offer_creation_all_failed) { test_offer_creation_all_failed(); }
+TORRENT_TEST(signaling_offer_timeout_completes_batch) { test_offer_timeout_completes_batch(); }
 TORRENT_TEST(signaling_offer_udp_port_exhaustion_recovery)
 {
 	test_offer_udp_port_exhaustion_recovery();

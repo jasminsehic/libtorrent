@@ -380,7 +380,7 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	});
 
 	pc->onGatheringStateChange(
-		[weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), handler_ = std::move(handler)](
+		[weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), handler_ = handler](
 			rtc::PeerConnection::GatheringState state) {
 			// Warning: this is called from another thread
 			auto self = weak_this.lock();
@@ -416,6 +416,9 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	time_duration const timeout = seconds(std::max(connection_timeout, 1));
 	connection conn(m_io_context);
 	conn.peer_connection = std::move(pc);
+	// Retain the description callback so an RTC timeout can complete an
+	// offer that has not finished ICE gathering.
+	conn.description_completion = std::move(handler);
 	conn.timer.expires_after(timeout);
 	conn.timer.async_wait(std::bind(&rtc_signaling::on_data_channel
 		, shared_from_this()
@@ -475,6 +478,11 @@ void rtc_signaling::on_data_channel(error_code const& ec
 
 	if (ec)
 	{
+		// A timeout or failed connection may occur before ICE gathering
+		// produces a description. Report this outcome to the offer batch.
+		// The completion guard in generate_offers() suppresses duplicates.
+		if (conn.description_completion)
+			conn.description_completion(ec, "");
 #ifndef TORRENT_DISABLE_LOGGING
 		debug_log("*** RTC negotiation failed");
 #endif
