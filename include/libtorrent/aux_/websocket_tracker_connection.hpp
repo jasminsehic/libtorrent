@@ -130,6 +130,7 @@ private:
 	std::map<sha1_hash, int> m_offer_quota;
 	deadline_timer m_announce_timer;
 	time_point m_last_receive = min_time();
+	time_point m_write_started = min_time();
 	bool m_sending = false;
 	std::optional<sha1_hash> m_sending_request;
 };

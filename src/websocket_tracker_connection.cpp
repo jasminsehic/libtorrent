@@ -416,6 +416,7 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE [ size: %ld, data: %s ]", long(m_write_data.size()), m_write_data.c_str());
 #endif
 
+	m_write_started = clock_type::now();
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
 	m_websocket->async_write(boost::asio::const_buffer(m_write_data.data(), m_write_data.size())
 			, std::bind(&websocket_tracker_connection::on_write, shared_from_this(), _1, _2));
@@ -444,6 +445,7 @@ void websocket_tracker_connection::do_send(tracker_answer const& ans)
 				, long(m_write_data.size()), m_write_data.c_str());
 #endif
 
+	m_write_started = clock_type::now();
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
 	m_websocket->async_write(boost::asio::const_buffer(m_write_data.data(), m_write_data.size())
 			, std::bind(&websocket_tracker_connection::on_write, shared_from_this(), _1, _2));
@@ -635,9 +637,16 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	}
 }
 
-void websocket_tracker_connection::on_write(error_code const& ec, std::size_t /* bytes_written */)
+void websocket_tracker_connection::on_write(error_code const& ec, std::size_t bytes_written)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_write");
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE_COMPLETE [ url: %s bytes: %ld elapsed-ms: %lld error: %s ]",
+			tracker_req().url.c_str(), long(bytes_written),
+			static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				clock_type::now() - m_write_started).count()), ec.message().c_str());
+#endif
 	m_write_data.clear();
 	m_sending_request.reset();
 	m_sending = false;
