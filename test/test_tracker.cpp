@@ -958,6 +958,7 @@ struct tracker_alert_counts
 	int replies = 0;
 	int errors = 0;
 	error_code last_error;
+	operation_t last_op = operation_t::unknown;
 	std::string last_failure_reason;
 };
 
@@ -980,6 +981,7 @@ tracker_alert_counts count_tracker_alerts(lt::session& s, lt::time_duration cons
 			{
 				++ret.errors;
 				ret.last_error = te->error;
+				ret.last_op = te->op;
 				ret.last_failure_reason = te->failure_reason();
 			}
 		}
@@ -1077,6 +1079,93 @@ TORRENT_TEST(websocket_tracker_bare_failure_keeps_connection)
 	}
 	stop_websocket_server();
 }
+
+TORRENT_TEST(websocket_tracker_announce_timeout)
+{
+	int const port = start_websocket_server(false, 30, "silent");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 1);
+		lt::session s(pack);
+		add_websocket_tracker_torrent(s, "tmp_timeout_tracker", websocket_tracker_url(port));
+		auto const counts = count_tracker_alerts(s, seconds(4));
+		TEST_EQUAL(counts.replies, 0);
+		TEST_CHECK(counts.errors >= 1);
+		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+		TEST_CHECK(counts.last_op == operation_t::timer);
+	}
+	stop_websocket_server();
+}
+
+// A request queued behind a connection attempt must time out even if the
+// TCP connection is accepted but the WebSocket handshake never completes.
+TORRENT_TEST(websocket_tracker_queued_handshake_timeout)
+{
+	lt::io_context ioc;
+	tcp::acceptor acceptor(ioc, tcp::endpoint(make_address_v4("127.0.0.1"), 0));
+	int const port = acceptor.local_endpoint().port();
+
+	settings_pack pack = websocket_tracker_settings();
+	pack.set_int(settings_pack::tracker_completion_timeout, 2);
+	lt::session s(pack);
+	add_websocket_tracker_torrent(s, "tmp_handshake_timeout_tracker", websocket_tracker_url(port));
+
+	auto const counts = count_tracker_alerts(s, seconds(6));
+	TEST_EQUAL(counts.replies, 0);
+	TEST_CHECK(counts.errors >= 1);
+	TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+	TEST_CHECK(counts.last_op == operation_t::timer);
+}
+
+// A connection that receives no valid tracker response is discarded after
+// timeout, so a later announce can connect to a responsive replacement.
+TORRENT_TEST(websocket_tracker_dead_connection_replaced_after_timeout)
+{
+	int const port = start_websocket_server(false, 30, "silent-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 2);
+		lt::session s(pack);
+		auto const h = add_websocket_tracker_torrent(
+			s, "tmp_dead_connection_tracker", websocket_tracker_url(port));
+		auto counts = count_tracker_alerts(s, seconds(5));
+		TEST_CHECK(counts.errors >= 1);
+		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+		TEST_CHECK(counts.last_op == operation_t::timer);
+
+		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+		counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// Malformed messages must not reset the activity clock and keep a dead
+// tracker connection around indefinitely.
+TORRENT_TEST(websocket_tracker_malformed_response_does_not_keep_connection_alive)
+{
+	int const port = start_websocket_server(false, 30, "malformed-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 2);
+		lt::session s(pack);
+		auto const h = add_websocket_tracker_torrent(
+			s, "tmp_malformed_connection_tracker", websocket_tracker_url(port));
+		auto counts = count_tracker_alerts(s, seconds(5));
+		TEST_CHECK(counts.errors >= 1);
+		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+		TEST_CHECK(counts.last_op == operation_t::timer);
+
+		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+		counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+
 #endif
 
 namespace {

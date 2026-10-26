@@ -166,6 +166,7 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 private:
 	void do_connect(std::string url);
 	void do_resolve(std::string hostname, std::uint16_t port);
+	void close_socket();
 	void on_resolve(error_code const& ec, std::vector<address> const& addresses);
 	void do_tcp_connect(std::vector<tcp::endpoint> endpoints);
 	void on_tcp_connect(error_code const& ec);
