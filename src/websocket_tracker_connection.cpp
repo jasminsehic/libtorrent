@@ -283,8 +283,8 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 				static_cast<void const*>(this),
 				aux::to_hex({req.info_hash.data(), 20}).c_str(), int(in_flight), int(queued));
 #endif
-		post(m_io_context, [cb, req = std::move(req)] {
-			report_error(cb, req, errors::announce_skipped, operation_t::bittorrent);
+		post(m_io_context, [cb, rejected_req = std::move(req)] {
+			report_error(cb, rejected_req, errors::announce_skipped, operation_t::bittorrent);
 		});
 		return;
 	}
