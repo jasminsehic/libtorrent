@@ -267,6 +267,15 @@ bool is_tracker_protocol_supported(string_view const url)
 	}
 
 #if TORRENT_USE_RTC
+	bool tracker_manager::is_current_websocket_connection(std::string const& url,
+		websocket_tracker_connection const* connection, std::uint64_t generation) const
+	{
+		auto const it = m_websocket_conns.find(url);
+		return it != m_websocket_conns.end()
+			&& it->second.get() == connection
+			&& it->second->generation() == generation;
+	}
+
 	void tracker_manager::remove_request(aux::websocket_tracker_connection const* c)
 	{
 		TORRENT_ASSERT(is_single_thread());
@@ -421,8 +430,14 @@ bool is_tracker_protocol_supported(string_view const url)
 								: static_cast<void const*>(it->second.get()),
 							aux::to_hex({con->tracker_req().info_hash.data(), 20}).c_str());
 #endif
-					con->start();
+					// Register the replacement before closing the old instance so
+					// its late callbacks cannot remove or reuse the new one.
+					auto previous = it == m_websocket_conns.end()
+						? std::shared_ptr<aux::websocket_tracker_connection>{} : it->second;
 					m_websocket_conns[con->tracker_req().url] = con;
+					con->start();
+					if (previous)
+						previous->close();
 				}
 			});
 			return;

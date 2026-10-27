@@ -24,6 +24,18 @@ using namespace lt;
 using namespace lt::aux;
 using namespace std::placeholders;
 
+#if TORRENT_USE_RTC
+namespace libtorrent::aux {
+struct tracker_manager_test_access
+{
+	static auto& connections(tracker_manager& manager)
+	{
+		return manager.m_websocket_conns;
+	}
+};
+} // namespace libtorrent::aux
+#endif
+
 struct tracker_manager_handler : aux::session_logger {
 
 	tracker_manager_handler(io_context& ios, aux::session_settings& sett)
@@ -252,6 +264,62 @@ TORRENT_TEST(websocket_tracker_duplicate_announce_callback)
 	con->close();
 	TEST_EQUAL(first_cb->errors, 1);
 	TEST_EQUAL(duplicate_cb->errors, 1);
+}
+
+// Replacing a manager entry must invalidate the old generation even if its
+// underlying WebSocket remains open and able to accept writes.
+TORRENT_TEST(websocket_tracker_replaced_open_connection_rejects_answer)
+{
+	struct single_thread_tracker_manager : tracker_manager_handler
+	{
+		using tracker_manager_handler::tracker_manager_handler;
+#if TORRENT_USE_ASSERTS
+		bool is_single_thread() const override { return true; }
+#endif
+	};
+
+	int const port = start_websocket_server(false, 30, "silent");
+	{
+		io_context ios;
+		aux::session_settings sett;
+		single_thread_tracker_manager h(ios, sett);
+		auto callback = std::make_shared<ws_request_callback>();
+
+		tracker_request req;
+		req.url = "ws://127.0.0.1:" + std::to_string(port) + "/announce";
+		req.info_hash = sha1_hash("abcdefghijklmnopqrst");
+		req.pid = peer_id("abcdefghijklmnopqrst");
+		req.num_want = 1;
+
+		auto old = std::make_shared<websocket_tracker_connection>(
+			ios, h.m_tracker_manager, req, callback);
+		tracker_manager_test_access::connections(h.m_tracker_manager)[req.url] = old;
+		old->start();
+		for (int i = 0; i < 50 && !old->is_open(); ++i)
+		{
+			ios.run_for(std::chrono::milliseconds(50));
+			ios.restart();
+		}
+		TEST_CHECK(old->is_open());
+		TEST_CHECK(old->is_current());
+
+		auto current = std::make_shared<websocket_tracker_connection>(
+			ios, h.m_tracker_manager, req, callback);
+		TEST_CHECK(current->generation() != old->generation());
+		tracker_manager_test_access::connections(h.m_tracker_manager)[req.url] = current;
+		TEST_CHECK(old->is_open());
+		TEST_CHECK(!old->is_current());
+		TEST_CHECK(current->is_current());
+
+		tracker_answer answer;
+		answer.info_hash = req.info_hash;
+		answer.pid = req.pid;
+		answer.answer.sdp = "v=0";
+		TEST_CHECK(!old->queue_answer(std::move(answer)));
+		old->close();
+		current->close();
+	}
+	stop_websocket_server();
 }
 
 // RTC answer generation may finish after a tracker closes its WebSocket.

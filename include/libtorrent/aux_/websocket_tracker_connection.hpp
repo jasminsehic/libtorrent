@@ -61,6 +61,8 @@ struct TORRENT_EXTRA_EXPORT websocket_tracker_connection : tracker_connection
 
 	bool is_started() const;
 	bool is_open() const;
+	bool is_current() const;
+	std::uint64_t generation() const { return m_generation; }
 
 	// aborts every non-stopped-event request on this connection (it may
 	// multiplex several torrents' requests). Returns true if a
@@ -68,7 +70,7 @@ struct TORRENT_EXTRA_EXPORT websocket_tracker_connection : tracker_connection
 	bool prune_non_stopped_requests();
 
 	void queue_request(tracker_request req, std::weak_ptr<request_callback> cb);
-	void queue_answer(tracker_answer ans);
+	bool queue_answer(tracker_answer ans);
 
 private:
 	std::shared_ptr<websocket_tracker_connection> shared_from_this()
@@ -133,6 +135,7 @@ private:
 	time_point m_write_started = min_time();
 	bool m_sending = false;
 	std::optional<sha1_hash> m_sending_request;
+	std::uint64_t m_generation;
 };
 
 struct websocket_tracker_response {

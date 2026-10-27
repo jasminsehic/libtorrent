@@ -81,6 +81,7 @@ websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)
 	, m_announce_timer(ios)
+	, m_generation(man.next_websocket_generation())
 {
 	// shared_from_this() is unavailable during construction, so queue the
 	// first request directly and arm its deadline in start().
@@ -200,6 +201,11 @@ bool websocket_tracker_connection::is_open() const
 	return m_websocket && m_websocket->is_open();
 }
 
+bool websocket_tracker_connection::is_current() const
+{
+	return m_man.is_current_websocket_connection(tracker_req().url, this, m_generation);
+}
+
 bool websocket_tracker_connection::prune_non_stopped_requests()
 {
 	error_code const ec = errors::announce_skipped;
@@ -289,12 +295,22 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 	if (is_open()) send_pending();
 }
 
-void websocket_tracker_connection::queue_answer(tracker_answer ans)
+bool websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	// An RTC answer may complete after its tracker connection was closed.
-	// Do not queue signaling for a socket that no longer exists.
-	if (!is_open())
-		return;
+	// An RTC answer may arrive after the manager replaces this connection.
+	// Being open alone does not imply this socket still owns the tracker URL.
+	if (!is_open() || !is_current())
+	{
+#ifndef TORRENT_DISABLE_LOGGING
+		if (auto cb = requester())
+			cb->debug_log("*** WEBSOCKET_TRACKER_ANSWER_DROPPED [ url: %s connection: %p "
+				"generation: %llu reason: %s ]", tracker_req().url.c_str(),
+				static_cast<void const*>(this),
+				static_cast<unsigned long long>(m_generation),
+				is_open() ? "not-current" : "connection-closed");
+#endif
+		return false;
+	}
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
@@ -309,6 +325,7 @@ void websocket_tracker_connection::queue_answer(tracker_answer ans)
 	m_pending.emplace_back(
 		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{}, max_time());
 	send_pending();
+	return true;
 }
 
 time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
@@ -598,6 +615,11 @@ void websocket_tracker_connection::on_timeout(error_code const& ec)
 void websocket_tracker_connection::on_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
+	if (!is_current())
+	{
+		close();
+		return;
+	}
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
 		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT_COMPLETE [ url: %s connection: %p error: %s ]",
@@ -620,6 +642,11 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_read */)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_read");
+	if (!is_current())
+	{
+		close();
+		return;
+	}
 	auto reissue_read = aux::scope_end([this] { do_read(); });
 	if (ec)
 	{
@@ -769,16 +796,18 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 					auto self = weak_self.lock();
 					if (!self)
 						return;
-					if (!self->is_open())
+					if (!self->is_open() || !self->is_current())
 					{
 #ifndef TORRENT_DISABLE_LOGGING
 						if (auto answer_logger = self->requester())
 							answer_logger->debug_log(
 								"*** WEBSOCKET_TRACKER_ANSWER_DROPPED [ url: %s connection: %p "
-								"info_hash: %s reason: connection-closed ]",
+								"info_hash: %s reason: %s generation: %llu ]",
 								self->tracker_req().url.c_str(),
 								static_cast<void const*>(self.get()),
-								aux::to_hex({hash.data(), 20}).c_str());
+								aux::to_hex({hash.data(), 20}).c_str(),
+								self->is_open() ? "not-current" : "connection-closed",
+								static_cast<unsigned long long>(self->generation()));
 #endif
 						return;
 					}
@@ -819,6 +848,11 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 void websocket_tracker_connection::on_write(error_code const& ec, std::size_t bytes_written)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_write");
+	if (!is_current())
+	{
+		close();
+		return;
+	}
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
 		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE_COMPLETE [ url: %s connection: %p bytes: %ld "
