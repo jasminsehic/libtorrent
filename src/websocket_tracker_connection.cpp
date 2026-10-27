@@ -259,6 +259,30 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 			long(m_pending.size()));
 	}
 #endif
+	// Do not admit another announce for this info hash while one is queued
+	// or awaiting a response. An overwritten callback would never complete.
+	auto const active = m_callbacks.find(req.info_hash);
+	bool const in_flight = active != m_callbacks.end() && active->second.pending;
+	bool const queued = std::any_of(m_pending.begin(), m_pending.end(),
+		[&](auto const& item) {
+			auto const* pending = std::get_if<tracker_request>(&std::get<0>(item));
+			return pending && pending->info_hash == req.info_hash;
+		});
+	if (in_flight || queued)
+	{
+#ifndef TORRENT_DISABLE_LOGGING
+		if (auto c = cb.lock())
+			c->debug_log("*** WEBSOCKET_TRACKER_DUPLICATE_ANNOUNCE [ url: %s connection: %p "
+				"info_hash: %s in-flight: %d queued: %d ]", req.url.c_str(),
+				static_cast<void const*>(this),
+				aux::to_hex({req.info_hash.data(), 20}).c_str(), int(in_flight), int(queued));
+#endif
+		post(m_io_context, [cb, req = std::move(req)] {
+			report_error(cb, req, errors::announce_skipped, operation_t::bittorrent);
+		});
+		return;
+	}
+
 	time_point const deadline = request_deadline(req);
 	m_pending.emplace_back(tracker_message{std::move(req)}, cb, deadline);
 	update_announce_timer();
@@ -332,10 +356,17 @@ void websocket_tracker_connection::send_pending()
 		[this, cb = callback, deadline_copy = deadline](auto const& m) {
 			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
 			{
-#if TORRENT_USE_ASSERTS
 				auto const existing = m_callbacks.find(m.info_hash);
-				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
-#endif
+				if (existing != m_callbacks.end() && existing->second.pending)
+				{
+					// Defensive check even if a duplicate bypassed queue_request().
+					post(m_io_context, [cb, req = m] {
+						report_error(cb, req, errors::announce_skipped, operation_t::bittorrent);
+					});
+					m_sending = false;
+					send_pending();
+					return;
+				}
 #ifndef TORRENT_DISABLE_LOGGING
 				if (auto c = cb.lock())
 				{

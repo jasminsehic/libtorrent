@@ -207,6 +207,53 @@ TORRENT_TEST(empty_and_num_requests)
 
 #if TORRENT_USE_RTC
 
+// An overlapping announce for the same torrent must not replace a pending
+// callback: each caller receives exactly one outcome even without asserts.
+TORRENT_TEST(websocket_tracker_duplicate_announce_callback)
+{
+	struct counting_callback : ws_request_callback
+	{
+		int errors = 0;
+		void tracker_request_error(tracker_request const&, error_code const&,
+			operation_t, std::string const&, seconds32) override
+		{
+			++errors;
+		}
+	};
+
+	struct single_thread_tracker_manager : tracker_manager_handler
+	{
+		using tracker_manager_handler::tracker_manager_handler;
+#if TORRENT_USE_ASSERTS
+		bool is_single_thread() const override { return true; }
+#endif
+	};
+
+	io_context ios;
+	aux::session_settings sett;
+	single_thread_tracker_manager handler(ios, sett);
+	auto first_cb = std::make_shared<counting_callback>();
+	auto duplicate_cb = std::make_shared<counting_callback>();
+
+	tracker_request req;
+	req.url = "ws://127.0.0.1:1/announce";
+	req.info_hash = sha1_hash("abcdefghijklmnopqrst");
+	req.pid = peer_id("abcdefghijklmnopqrst");
+	req.num_want = 1;
+
+	auto con = std::make_shared<websocket_tracker_connection>(
+		ios, handler.m_tracker_manager, req, first_cb);
+	con->queue_request(req, duplicate_cb);
+	ios.poll();
+	ios.restart();
+	TEST_EQUAL(first_cb->errors, 0);
+	TEST_EQUAL(duplicate_cb->errors, 1);
+
+	con->close();
+	TEST_EQUAL(first_cb->errors, 1);
+	TEST_EQUAL(duplicate_cb->errors, 1);
+}
+
 // RTC answer generation may finish after a tracker closes its WebSocket.
 // The late callback must not recreate an orphaned connection that is no longer
 // registered with tracker_manager.
