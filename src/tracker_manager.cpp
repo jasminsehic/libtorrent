@@ -275,8 +275,11 @@ bool is_tracker_protocol_supported(string_view const url)
 		bool const current = it != m_websocket_conns.end() && it->second.get() == c;
 #ifndef TORRENT_DISABLE_LOGGING
 		if (auto logger = c->requester())
-			logger->debug_log("*** WEBSOCKET_TRACKER_MANAGER [ action: remove url: %s connection: %p current: %d ]",
-				req.url.c_str(), static_cast<void const*>(c), int(current));
+			logger->debug_log("*** WEBSOCKET_TRACKER_MANAGER [ action: remove url: %s connection: "
+							  "%p current: %d ]",
+				req.url.c_str(),
+				static_cast<void const*>(c),
+				int(current));
 #endif
 		if (current)
 			m_websocket_conns.erase(it);
@@ -396,8 +399,10 @@ bool is_tracker_protocol_supported(string_view const url)
 				if (it != m_websocket_conns.end() && it->second->is_started()) {
 #ifndef TORRENT_DISABLE_LOGGING
 					if (auto logger = c.lock())
-						logger->debug_log("*** WEBSOCKET_TRACKER_MANAGER [ action: reuse url: %s connection: %p info_hash: %s ]",
-							request.url.c_str(), static_cast<void const*>(it->second.get()),
+						logger->debug_log("*** WEBSOCKET_TRACKER_MANAGER [ action: reuse url: %s "
+										  "connection: %p info_hash: %s ]",
+							request.url.c_str(),
+							static_cast<void const*>(it->second.get()),
 							aux::to_hex({request.info_hash.data(), 20}).c_str());
 #endif
 					it->second->queue_request(std::move(request), c);
@@ -406,10 +411,14 @@ bool is_tracker_protocol_supported(string_view const url)
 							ios, *this, std::move(request), c);
 #ifndef TORRENT_DISABLE_LOGGING
 					if (auto logger = c.lock())
-						logger->debug_log("*** WEBSOCKET_TRACKER_MANAGER [ action: %s url: %s connection: %p previous: %p info_hash: %s ]",
+						logger->debug_log("*** WEBSOCKET_TRACKER_MANAGER [ action: %s url: %s "
+										  "connection: %p previous: %p info_hash: %s ]",
 							it == m_websocket_conns.end() ? "create" : "replace",
-							con->tracker_req().url.c_str(), static_cast<void const*>(con.get()),
-							it == m_websocket_conns.end() ? nullptr : static_cast<void const*>(it->second.get()),
+							con->tracker_req().url.c_str(),
+							static_cast<void const*>(con.get()),
+							it == m_websocket_conns.end()
+								? nullptr
+								: static_cast<void const*>(it->second.get()),
 							aux::to_hex({con->tracker_req().info_hash.data(), 20}).c_str());
 #endif
 					con->start();

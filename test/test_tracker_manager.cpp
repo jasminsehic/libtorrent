@@ -231,7 +231,7 @@ TORRENT_TEST(websocket_tracker_late_answer_does_not_reconnect)
 		}
 
 #ifndef TORRENT_DISABLE_LOGGING
-		void debug_log(char const* fmt, ...) const noexcept override TORRENT_FORMAT(2,3)
+		void debug_log(char const* fmt, ...) const noexcept override TORRENT_FORMAT(2, 3)
 		{
 			if (std::strstr(fmt, "WEBSOCKET_TRACKER_CONNECT [") != nullptr)
 				++connect_attempts;
@@ -255,8 +255,9 @@ TORRENT_TEST(websocket_tracker_late_answer_does_not_reconnect)
 
 		// Wait for the offered callback and for the server-side close to
 		// remove the old connection from the manager.
-		for (int i = 0; i < 100
-			&& (!callback->answer_callback || !handler.m_tracker_manager.empty()); ++i)
+		for (int i = 0;
+			 i < 100 && (!callback->answer_callback || !handler.m_tracker_manager.empty());
+			 ++i)
 		{
 			ios.run_for(std::chrono::milliseconds(50));
 			ios.restart();
