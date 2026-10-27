@@ -228,9 +228,13 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
+	// An RTC answer may complete after its tracker connection was closed.
+	// Do not queue signaling for a socket that no longer exists.
+	if (!is_open()) return;
+
 	m_pending.emplace_back(
 		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{}, max_time());
-	if (is_open()) send_pending();
+	send_pending();
 }
 
 time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
@@ -603,14 +607,15 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		{
 			--quota->second;
 
+			// RTC answer generation is asynchronous. The WebSocket may have
+			// been replaced before it finishes; never keep the old connection
+			// alive or reconnect it just to send a late answer.
 			response.offer->answer_callback = [hash = info_hash,
-												  self = shared_from_this(),
-												  id = response.offer->id,
-												  pid = response.offer->pid](
-												  peer_id const& local_pid,
-												  aux::rtc_answer const& answer) {
-				self->queue_answer({std::move(hash), std::move(local_pid), std::move(answer)});
-				self->start();
+				weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())](
+				peer_id const& local_pid, aux::rtc_answer const& answer) {
+				auto self = weak_self.lock();
+				if (!self || !self->is_open()) return;
+				self->queue_answer({hash, local_pid, answer});
 			};
 
 			cb->on_rtc_offer(*response.offer);
