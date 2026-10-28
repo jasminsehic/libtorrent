@@ -437,8 +437,7 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 			++it;
 			continue;
 		}
-		// A timed-out announce makes this shared connection unreliable even
-		// when other torrents continue to receive tracker responses.
+		// An expired announce deadline requires replacing the connection.
 		connection_dead = true;
 #ifndef TORRENT_DISABLE_LOGGING
 		if (auto c = it->second.cb.lock())
