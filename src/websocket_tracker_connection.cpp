@@ -407,7 +407,7 @@ void websocket_tracker_connection::send_pending()
 				}
 #endif
 				m_callbacks[m.info_hash] =
-					callback_entry{cb, m, true, deadline_copy, clock_type::now()};
+					callback_entry{cb, m, true, deadline_copy};
 				m_sending_request = m.info_hash;
 			}
 			else
@@ -437,21 +437,18 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 			++it;
 			continue;
 		}
-		// A stalled write or no valid tracker activity since this announce
-		// suggests the shared connection itself is dead.
-		if ((m_sending_request && *m_sending_request == it->first)
-			|| m_last_receive <= it->second.sent)
-			connection_dead = true;
+		// A timed-out announce makes this shared connection unreliable even
+		// when other torrents continue to receive tracker responses.
+		connection_dead = true;
 #ifndef TORRENT_DISABLE_LOGGING
 		if (auto c = it->second.cb.lock())
 		{
 			auto const hash = aux::to_hex({it->first.data(), 20});
 			c->debug_log("*** WEBSOCKET_TRACKER_CALLBACK_TIMEOUT [ url: %s connection: %p "
-						 "info_hash: %s other-activity-after-send: %d sending: %d ]",
+						 "info_hash: %s sending: %d ]",
 				tracker_req().url.c_str(),
 				static_cast<void const*>(this),
 				hash.c_str(),
-				int(m_last_receive > it->second.sent),
 				int(m_sending_request && *m_sending_request == it->first));
 		}
 #endif
@@ -649,7 +646,6 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 		return;
 	}
 
-	m_last_receive = clock_type::now();
 	send_pending();
 	do_read();
 }
@@ -708,14 +704,12 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		}
 #endif
 		// A malformed or uncorrelated message cannot complete an announce.
-		// Keep the shared connection open, but do not refresh its activity
-		// timestamp; pending announces will still time out if no valid reply arrives.
+		// The outstanding announce deadlines still apply.
 		do_read();
 		return;
 	}
 
 	// Malformed messages must not keep a dead connection alive.
-	m_last_receive = clock_type::now();
 	TORRENT_ASSERT(std::holds_alternative<websocket_tracker_response>(ret));
 	auto response = std::move(std::get<websocket_tracker_response>(ret));
 

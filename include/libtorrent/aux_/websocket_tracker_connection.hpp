@@ -120,7 +120,6 @@ private:
 		tracker_request req;
 		bool pending = true;
 		time_point deadline;
-		time_point sent;
 	};
 	// on_read() holds an iterator into m_callbacks across a reentrant call
 	// into cb->on_rtc_offer()/on_rtc_answer(), which may indirectly insert
@@ -131,7 +130,6 @@ private:
 	std::map<sha1_hash, callback_entry> m_callbacks;
 	std::map<sha1_hash, int> m_offer_quota;
 	deadline_timer m_announce_timer;
-	time_point m_last_receive = min_time();
 	time_point m_write_started = min_time();
 	bool m_sending = false;
 	std::optional<sha1_hash> m_sending_request;

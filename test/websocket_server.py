@@ -24,9 +24,12 @@ async def handle(websocket):
     global connections
     connections += 1
     connection_index = connections
+    ignored_info_hash = None
     # the tracker behavior to simulate:
     # silent: never respond
     # silent-first-connection: ignore announces on the first connection only
+    # silent-one-hash-first-connection: ignore one info_hash on the first
+    #   connection, but respond to other hashes on that shared WebSocket
     # malformed-first-connection: send invalid responses on the first connection
     # normal: respond to every announce
     # failure: respond to every announce with a failure reason
@@ -59,6 +62,11 @@ async def handle(websocket):
                 await websocket.send(json.dumps({"action": "announce"}))
                 continue
             info_hash = request["info_hash"]
+            if mode == 'silent-one-hash-first-connection' and connection_index == 1:
+                if ignored_info_hash is None:
+                    ignored_info_hash = info_hash
+                if info_hash == ignored_info_hash:
+                    continue
 
             if mode == 'offer-close':
                 await websocket.send(json.dumps({

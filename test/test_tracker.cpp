@@ -1141,8 +1141,38 @@ TORRENT_TEST(websocket_tracker_dead_connection_replaced_after_timeout)
 	stop_websocket_server();
 }
 
-// Malformed messages must not reset the activity clock and keep a dead
-// tracker connection around indefinitely.
+// A response for another info hash on the same WebSocket must not keep a
+// connection alive when an announce for this hash times out.
+TORRENT_TEST(websocket_tracker_one_unresponsive_hash_replaces_shared_connection)
+{
+	int const port = start_websocket_server(false, 30, "silent-one-hash-first-connection");
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_int(settings_pack::tracker_completion_timeout, 2);
+		lt::session s(pack);
+		auto const h = add_websocket_tracker_torrent(
+			s, "tmp_one_unresponsive_hash_tracker", websocket_tracker_url(port));
+
+		// The hybrid torrent announces both info hashes on one shared
+		// connection. The server ignores one and responds to the other.
+		auto counts = count_tracker_alerts(s, seconds(5));
+		TEST_CHECK(counts.replies >= 1);
+		TEST_CHECK(counts.errors >= 1);
+		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
+		TEST_CHECK(counts.last_op == operation_t::timer);
+
+		// Both hashes must succeed on the replacement connection. Keeping
+		// the old socket alive would still blackhole the ignored hash.
+		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
+		counts = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+// Malformed messages cannot complete an announce or keep a dead tracker
+// connection around indefinitely.
 TORRENT_TEST(websocket_tracker_malformed_response_does_not_keep_connection_alive)
 {
 	int const port = start_websocket_server(false, 30, "malformed-first-connection");
