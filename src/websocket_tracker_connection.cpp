@@ -377,6 +377,14 @@ void websocket_tracker_connection::send_pending()
 				if (existing != m_callbacks.end() && existing->second.pending)
 				{
 					// Defensive check even if a duplicate bypassed queue_request().
+#ifndef TORRENT_DISABLE_LOGGING
+					if (auto c = cb.lock())
+					{
+						c->debug_log("*** WEBSOCKET_TRACKER_DUPLICATE_SEND [ url: %s connection: %p "
+							"info_hash: %s ]", m.url.c_str(), static_cast<void const*>(this),
+							aux::to_hex({m.info_hash.data(), 20}).c_str());
+					}
+#endif
 					post(m_io_context, [cb, req = m] {
 						report_error(cb, req, errors::announce_skipped, operation_t::bittorrent);
 					});
@@ -617,6 +625,13 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
 	if (!is_current())
 	{
+#ifndef TORRENT_DISABLE_LOGGING
+		if (auto cb = requester())
+			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
+				"generation: %llu stage: connect ]",
+				tracker_req().url.c_str(), static_cast<void const*>(this),
+				static_cast<unsigned long long>(m_generation));
+#endif
 		close();
 		return;
 	}
@@ -644,6 +659,13 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	COMPLETE_ASYNC("websocket_tracker_connection::on_read");
 	if (!is_current())
 	{
+#ifndef TORRENT_DISABLE_LOGGING
+		if (auto cb = requester())
+			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
+				"generation: %llu stage: read ]",
+				tracker_req().url.c_str(), static_cast<void const*>(this),
+				static_cast<unsigned long long>(m_generation));
+#endif
 		close();
 		return;
 	}
@@ -850,6 +872,13 @@ void websocket_tracker_connection::on_write(error_code const& ec, std::size_t by
 	COMPLETE_ASYNC("websocket_tracker_connection::on_write");
 	if (!is_current())
 	{
+#ifndef TORRENT_DISABLE_LOGGING
+		if (auto cb = requester())
+			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
+				"generation: %llu stage: write ]",
+				tracker_req().url.c_str(), static_cast<void const*>(this),
+				static_cast<unsigned long long>(m_generation));
+#endif
 		close();
 		return;
 	}
