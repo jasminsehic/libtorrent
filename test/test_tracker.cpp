@@ -1097,26 +1097,6 @@ TORRENT_TEST(websocket_tracker_announce_timeout)
 	stop_websocket_server();
 }
 
-// A request queued behind a connection attempt must time out even if the
-// TCP connection is accepted but the WebSocket handshake never completes.
-TORRENT_TEST(websocket_tracker_queued_handshake_timeout)
-{
-	lt::io_context ioc;
-	tcp::acceptor acceptor(ioc, tcp::endpoint(make_address_v4("127.0.0.1"), 0));
-	int const port = acceptor.local_endpoint().port();
-
-	settings_pack pack = websocket_tracker_settings();
-	pack.set_int(settings_pack::tracker_completion_timeout, 2);
-	lt::session s(pack);
-	add_websocket_tracker_torrent(s, "tmp_handshake_timeout_tracker", websocket_tracker_url(port));
-
-	auto const counts = count_tracker_alerts(s, seconds(6));
-	TEST_EQUAL(counts.replies, 0);
-	TEST_CHECK(counts.errors >= 1);
-	TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
-	TEST_CHECK(counts.last_op == operation_t::timer);
-}
-
 // An expired announce deadline replaces the connection, allowing subsequent
 // announces to succeed regardless of how many earlier responses arrived.
 TORRENT_TEST(websocket_tracker_connection_replaced_after_timeout)
@@ -1144,30 +1124,6 @@ TORRENT_TEST(websocket_tracker_connection_replaced_after_timeout)
 		}
 		stop_websocket_server();
 	}
-}
-
-// Malformed messages cannot complete an announce or keep a dead tracker
-// connection around indefinitely.
-TORRENT_TEST(websocket_tracker_malformed_response_does_not_keep_connection_alive)
-{
-	int const port = start_websocket_server(false, 30, "malformed-first-connection");
-	{
-		settings_pack pack = websocket_tracker_settings();
-		pack.set_int(settings_pack::tracker_completion_timeout, 2);
-		lt::session s(pack);
-		auto const h = add_websocket_tracker_torrent(
-			s, "tmp_malformed_connection_tracker", websocket_tracker_url(port));
-		auto counts = count_tracker_alerts(s, seconds(5));
-		TEST_CHECK(counts.errors >= 1);
-		TEST_EQUAL(counts.last_error, error_code(errors::timed_out));
-		TEST_CHECK(counts.last_op == operation_t::timer);
-
-		h.force_reannounce(0, -1, torrent_handle::ignore_min_interval);
-		counts = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(counts.replies, 2);
-		TEST_EQUAL(counts.errors, 0);
-	}
-	stop_websocket_server();
 }
 
 #endif

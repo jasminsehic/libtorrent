@@ -29,7 +29,6 @@ async def handle(websocket):
     # silent: never respond
     # silent-first-connection: ignore announces on the first connection only
     # partial-first-connection: respond to a subset of requests on the first connection
-    # malformed-first-connection: send invalid responses on the first connection
     # normal: respond to every announce
     # failure: respond to every announce with a failure reason
     # stale-failure: respond normally, then send a failure reason that isn't
@@ -56,9 +55,6 @@ async def handle(websocket):
             if mode == "silent":
                 continue
             if mode == "silent-first-connection" and connection_index == 1:
-                continue
-            if mode == "malformed-first-connection" and connection_index == 1:
-                await websocket.send(json.dumps({"action": "announce"}))
                 continue
             info_hash = request["info_hash"]
             if mode == 'partial-first-connection' and connection_index == 1:

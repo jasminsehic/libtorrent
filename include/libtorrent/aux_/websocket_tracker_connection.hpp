@@ -68,7 +68,7 @@ struct TORRENT_EXTRA_EXPORT websocket_tracker_connection : tracker_connection
 	bool prune_non_stopped_requests();
 
 	void queue_request(tracker_request req, std::weak_ptr<request_callback> cb);
-	bool queue_answer(tracker_answer ans);
+	void queue_answer(tracker_answer ans);
 
 private:
 	std::shared_ptr<websocket_tracker_connection> shared_from_this()
@@ -103,7 +103,7 @@ private:
 	std::string m_write_data;
 
 	using tracker_message = std::variant<tracker_request, tracker_answer>;
-	std::deque<std::tuple<tracker_message, std::weak_ptr<request_callback>, time_point>> m_pending;
+	std::deque<std::tuple<tracker_message, std::weak_ptr<request_callback>>> m_pending;
 
 	// pending is true from the point a request is sent until its first
 	// tracker_response is delivered. close() reports an error for any

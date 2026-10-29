@@ -84,9 +84,7 @@ websocket_tracker_connection::websocket_tracker_connection(
 	, m_ssl_context(req.ssl_ctx)
 	, m_announce_timer(ios)
 {
-	// shared_from_this() is unavailable during construction, so queue the
-	// first request directly and arm its deadline in start().
-	m_pending.emplace_back(tracker_message{req}, std::move(cb), request_deadline(req));
+	queue_request(req, std::move(cb));
 }
 
 void websocket_tracker_connection::start()
@@ -116,7 +114,6 @@ void websocket_tracker_connection::start()
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
 	m_websocket->async_connect(req.url, std::bind(&websocket_tracker_connection::on_connect
 			, shared_from_this(), _1));
-	update_announce_timer();
 }
 
 void websocket_tracker_connection::close()
@@ -146,8 +143,7 @@ void websocket_tracker_connection::close(error_code const& ec, operation_t const
 
 	while (!m_pending.empty())
 	{
-		auto [msg, callback, deadline] = std::move(m_pending.front());
-		TORRENT_UNUSED(deadline);
+		auto [msg, callback] = std::move(m_pending.front());
 		m_pending.pop_front();
 		if (callback.lock())
 		{
@@ -261,15 +257,13 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 			long(m_pending.size()));
 	}
 #endif
-	time_point const deadline = request_deadline(req);
-	m_pending.emplace_back(tracker_message{std::move(req)}, cb, deadline);
-	update_announce_timer();
+	m_pending.emplace_back(tracker_message{std::move(req)}, cb);
 	if (is_open()) send_pending();
 }
 
-bool websocket_tracker_connection::queue_answer(tracker_answer ans)
+void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	if (!is_open()) return false;
+	if (!is_open()) return;
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
@@ -282,9 +276,8 @@ bool websocket_tracker_connection::queue_answer(tracker_answer ans)
 	}
 #endif
 	m_pending.emplace_back(
-		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{}, max_time());
+		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
 	send_pending();
-	return true;
 }
 
 time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
@@ -308,11 +301,6 @@ void websocket_tracker_connection::update_announce_timer()
 		if (entry.pending)
 			earliest = std::min(earliest, entry.deadline);
 	}
-	for (auto const& item : m_pending)
-	{
-		if (std::holds_alternative<tracker_request>(std::get<0>(item)))
-			earliest = std::min(earliest, std::get<2>(item));
-	}
 	if (earliest == max_time())
 		return;
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_announce_timeout");
@@ -326,10 +314,10 @@ void websocket_tracker_connection::send_pending()
 	if (m_sending || m_pending.empty())
 		return;
 	m_sending = true;
-	auto [msg, callback, deadline] = std::move(m_pending.front());
+	auto [msg, callback] = std::move(m_pending.front());
 	m_pending.pop_front();
 	std::visit(
-		[this, cb = callback, deadline_copy = deadline](auto const& m) {
+		[this, cb = callback](auto const& m) {
 			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
 			{
 #ifndef TORRENT_DISABLE_LOGGING
@@ -347,7 +335,7 @@ void websocket_tracker_connection::send_pending()
 				}
 #endif
 				m_callbacks[m.info_hash] =
-					callback_entry{cb, m, true, deadline_copy};
+					callback_entry{cb, m, true, request_deadline(m)};
 				m_sending_request = m.info_hash;
 			}
 			else
@@ -395,17 +383,6 @@ void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
 		m_offer_quota.erase(it->first);
 		it = m_callbacks.erase(it);
 	}
-
-	auto const pending_end =
-		std::remove_if(m_pending.begin(), m_pending.end(), [&](auto const& item) {
-			auto const* req = std::get_if<tracker_request>(&std::get<0>(item));
-			if (!req || std::get<2>(item) > now)
-				return false;
-			connection_dead = true;
-			timed_out.emplace_back(std::get<1>(item), *req);
-			return true;
-		});
-	m_pending.erase(pending_end, m_pending.end());
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
@@ -618,13 +595,11 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 				std::get<std::string>(ret).c_str());
 		}
 #endif
-		// A malformed or uncorrelated message cannot complete an announce.
-		// The outstanding announce deadlines still apply.
-		do_read();
+		fail(ec, operation_t::handshake);
+		close(ec, operation_t::handshake);
 		return;
 	}
 
-	// Malformed messages must not keep a dead connection alive.
 	TORRENT_ASSERT(std::holds_alternative<websocket_tracker_response>(ret));
 	auto response = std::move(std::get<websocket_tracker_response>(ret));
 

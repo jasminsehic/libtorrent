@@ -421,14 +421,8 @@ bool is_tracker_protocol_supported(string_view const url)
 								: static_cast<void const*>(it->second.get()),
 							aux::to_hex({con->tracker_req().info_hash.data(), 20}).c_str());
 #endif
-					// Register the replacement before closing the old instance so
-					// its late callbacks cannot remove or reuse the new one.
-					auto previous = it == m_websocket_conns.end()
-						? std::shared_ptr<aux::websocket_tracker_connection>{} : it->second;
-					m_websocket_conns[con->tracker_req().url] = con;
 					con->start();
-					if (previous)
-						previous->close();
+					m_websocket_conns[request.url] = con;
 				}
 			});
 			return;
