@@ -60,7 +60,7 @@ void websocket_stream::close()
 		// abort the connection attempt in progress (TCP connect, TLS or
 		// WebSocket handshake), rather than letting it run to completion
 		// (or hang, if the server never responds)
-		close_socket();
+		terminate_socket();
 	}
 
 	m_keepalive_timer.cancel();
@@ -146,7 +146,7 @@ void websocket_stream::do_resolve(std::string hostname, std::uint16_t port)
 // Bypass the WebSocket close handshake so a silent peer cannot leave the
 // outstanding read pending indefinitely. Select the TCP socket beneath either
 // the plain WebSocket stream or the TLS and WebSocket layers.
-void websocket_stream::close_socket()
+void websocket_stream::terminate_socket()
 {
 	error_code ignore;
 	std::visit(
@@ -159,9 +159,6 @@ void websocket_stream::on_resolve(error_code const& ec, std::vector<address> con
 {
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
 
-	// the connection attempt was aborted by close()
-	if (!m_connect_handler)
-		return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -200,9 +197,6 @@ void websocket_stream::on_tcp_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
 
-	// the connection attempt was aborted by close()
-	if (!m_connect_handler)
-		return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -247,9 +241,6 @@ void websocket_stream::on_ssl_handshake(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_ssl_handshake");
 
-	// the connection attempt was aborted by close()
-	if (!m_connect_handler)
-		return;
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))

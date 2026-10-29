@@ -61,7 +61,6 @@ struct TORRENT_EXTRA_EXPORT websocket_tracker_connection : tracker_connection
 
 	bool is_started() const;
 	bool is_open() const;
-	bool is_current() const;
 
 	// aborts every non-stopped-event request on this connection (it may
 	// multiplex several torrents' requests). Returns true if a

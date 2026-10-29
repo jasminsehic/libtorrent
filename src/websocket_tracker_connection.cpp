@@ -200,11 +200,6 @@ bool websocket_tracker_connection::is_open() const
 	return m_websocket && m_websocket->is_open();
 }
 
-bool websocket_tracker_connection::is_current() const
-{
-	return m_man.is_current_websocket_connection(tracker_req().url, this);
-}
-
 bool websocket_tracker_connection::prune_non_stopped_requests()
 {
 	error_code const ec = errors::announce_skipped;
@@ -583,17 +578,6 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_read */)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_read");
-	if (!is_current())
-	{
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto cb = requester())
-			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
-				"stage: read ]",
-				tracker_req().url.c_str(), static_cast<void const*>(this));
-#endif
-		close();
-		return;
-	}
 	auto reissue_read = aux::scope_end([this] { do_read(); });
 	if (ec)
 	{

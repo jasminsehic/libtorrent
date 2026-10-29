@@ -364,8 +364,6 @@ namespace libtorrent::aux {
 		void remove_request(aux::udp_tracker_connection const* c);
 #if TORRENT_USE_RTC
 		void remove_request(aux::websocket_tracker_connection const* c);
-		bool is_current_websocket_connection(std::string const& url,
-			websocket_tracker_connection const* connection) const;
 #endif
 		bool empty() const;
 		int num_requests() const;
