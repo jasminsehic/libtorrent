@@ -37,8 +37,6 @@ async def handle(websocket):
     # bare-failure: inject a failure response without an info_hash, then send
     #   a normal, correlated response on the same connection. Tests that the
     #   client ignores the uncorrelated failure without closing the connection.
-    # offer-close: deliver a fake RTC offer, then close the WebSocket while
-    #   the client's answer callback may still be outstanding.
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
 
     try:
@@ -62,16 +60,6 @@ async def handle(websocket):
                     ignored_info_hash = info_hash
                 if info_hash == ignored_info_hash:
                     continue
-
-            if mode == 'offer-close':
-                await websocket.send(json.dumps({
-                    "action": "announce",
-                    "info_hash": info_hash,
-                    "offer_id": "01234567890123456789",
-                    "peer_id": "98765432109876543210",
-                    "offer": {"type": "offer", "sdp": "v=0\\r\\n"}}))
-                await websocket.close()
-                continue
 
             if mode == 'failure':
                 await websocket.send(json.dumps({

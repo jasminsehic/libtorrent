@@ -263,8 +263,6 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	if (!is_open()) return;
-
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
 	{
@@ -277,7 +275,7 @@ void websocket_tracker_connection::queue_answer(tracker_answer ans)
 #endif
 	m_pending.emplace_back(
 		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
-	send_pending();
+	if (is_open()) send_pending();
 }
 
 time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
@@ -692,31 +690,15 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		{
 			--quota->second;
 
-			// RTC answer generation is asynchronous. The WebSocket may have
-			// been replaced before it finishes; never keep the old connection
-			// alive or reconnect it just to send a late answer.
-			response.offer->answer_callback =
-				[hash = info_hash,
-					weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())
-#ifndef TORRENT_DISABLE_LOGGING
-					, weak_logger = std::weak_ptr<request_callback>(cb)
-					, tracker_url = tracker_req().url
-#endif
-				](peer_id const& local_pid, aux::rtc_answer const& answer) {
-					auto self = weak_self.lock();
-					if (!self)
-					{
-#ifndef TORRENT_DISABLE_LOGGING
-						if (auto logger = weak_logger.lock())
-							logger->debug_log(
-								"*** WEBSOCKET_TRACKER_ANSWER_DROPPED [ url: %s info_hash: %s "
-								"reason: expired-connection ]",
-								tracker_url.c_str(), aux::to_hex({hash.data(), 20}).c_str());
-#endif
-						return;
-					}
-					self->queue_answer({hash, local_pid, answer});
-				};
+			response.offer->answer_callback = [hash = info_hash,
+												  self = shared_from_this(),
+												  id = response.offer->id,
+												  pid = response.offer->pid](
+												  peer_id const& local_pid,
+												  aux::rtc_answer const& answer) {
+				self->queue_answer({std::move(hash), std::move(local_pid), std::move(answer)});
+				self->start();
+			};
 
 			cb->on_rtc_offer(*response.offer);
 		}
