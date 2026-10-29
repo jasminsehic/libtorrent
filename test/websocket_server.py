@@ -10,7 +10,7 @@ from datetime import datetime
 # Remove '.' from sys.path or we try to import the http.py module
 sys.path = sys.path[1:]
 
-from websockets.legacy.server import serve
+import websockets
 
 logger = logging.getLogger('websockets')
 logger.setLevel(logging.INFO)
@@ -114,7 +114,7 @@ async def main() -> None:
     else:
         ssl_context = None
 
-    server = await serve(handle, '127.0.0.1', 0, ssl=ssl_context)
+    server = await websockets.serve(handle, '127.0.0.1', 0, ssl=ssl_context)
     port = server.sockets[0].getsockname()[1]
     print(f'LISTENING_PORT {port}')
     sys.stdout.flush()
