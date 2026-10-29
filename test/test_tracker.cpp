@@ -1170,7 +1170,6 @@ TORRENT_TEST(websocket_tracker_malformed_response_does_not_keep_connection_alive
 	stop_websocket_server();
 }
 
-
 #endif
 
 namespace {

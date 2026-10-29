@@ -73,10 +73,12 @@ void report_error(std::weak_ptr<request_callback> const& cb,
 }
 }
 
-websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
+websocket_tracker_connection::websocket_tracker_connection(
+	io_context& ios,
 	tracker_manager& man,
 	tracker_request const& req,
-	std::weak_ptr<request_callback> cb)
+	std::weak_ptr<request_callback> cb
+)
 	: tracker_connection(man, req, ios, cb)
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)

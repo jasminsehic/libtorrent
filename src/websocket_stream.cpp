@@ -158,7 +158,6 @@ void websocket_stream::terminate_socket()
 void websocket_stream::on_resolve(error_code const& ec, std::vector<address> const& addresses)
 {
 	COMPLETE_ASYNC("websocket_stream::on_resolve");
-
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -196,7 +195,6 @@ void websocket_stream::do_tcp_connect(std::vector<tcp::endpoint> endpoints)
 void websocket_stream::on_tcp_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
-
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
@@ -240,7 +238,6 @@ void websocket_stream::do_ssl_handshake()
 void websocket_stream::on_ssl_handshake(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_ssl_handshake");
-
 	if (ec)
 	{
 		if (auto handler = std::exchange(m_connect_handler, nullptr))
