@@ -268,12 +268,10 @@ bool is_tracker_protocol_supported(string_view const url)
 
 #if TORRENT_USE_RTC
 	bool tracker_manager::is_current_websocket_connection(std::string const& url,
-		websocket_tracker_connection const* connection, std::uint64_t generation) const
+		websocket_tracker_connection const* connection) const
 	{
 		auto const it = m_websocket_conns.find(url);
-		return it != m_websocket_conns.end()
-			&& it->second.get() == connection
-			&& it->second->generation() == generation;
+		return it != m_websocket_conns.end() && it->second.get() == connection;
 	}
 
 	void tracker_manager::remove_request(aux::websocket_tracker_connection const* c)

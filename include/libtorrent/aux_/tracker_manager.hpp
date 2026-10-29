@@ -364,9 +364,8 @@ namespace libtorrent::aux {
 		void remove_request(aux::udp_tracker_connection const* c);
 #if TORRENT_USE_RTC
 		void remove_request(aux::websocket_tracker_connection const* c);
-		std::uint64_t next_websocket_generation() { return ++m_next_websocket_generation; }
 		bool is_current_websocket_connection(std::string const& url,
-			websocket_tracker_connection const* connection, std::uint64_t generation) const;
+			websocket_tracker_connection const* connection) const;
 #endif
 		bool empty() const;
 		int num_requests() const;
@@ -397,8 +396,6 @@ namespace libtorrent::aux {
 			, error_code& ec, aux::udp_send_flags_t flags = {});
 
 	private:
-		// Lets the focused generation regression test simulate a manager swap.
-		friend struct tracker_manager_test_access;
 
 		// maps transactionid to the udp_tracker_connection
 		// These must use shared_ptr to avoid a dangling reference
@@ -411,7 +408,6 @@ namespace libtorrent::aux {
 #if TORRENT_USE_RTC
 		// websocket connections by URL
 		std::unordered_map<std::string, std::shared_ptr<aux::websocket_tracker_connection>> m_websocket_conns;
-		std::uint64_t m_next_websocket_generation = 0;
 #endif
 
 		send_fun_t m_send_fun;

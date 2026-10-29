@@ -81,7 +81,6 @@ websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)
 	, m_announce_timer(ios)
-	, m_generation(man.next_websocket_generation())
 {
 	// shared_from_this() is unavailable during construction, so queue the
 	// first request directly and arm its deadline in start().
@@ -203,7 +202,7 @@ bool websocket_tracker_connection::is_open() const
 
 bool websocket_tracker_connection::is_current() const
 {
-	return m_man.is_current_websocket_connection(tracker_req().url, this, m_generation);
+	return m_man.is_current_websocket_connection(tracker_req().url, this);
 }
 
 bool websocket_tracker_connection::prune_non_stopped_requests()
@@ -265,30 +264,6 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 			long(m_pending.size()));
 	}
 #endif
-	// Do not admit another announce for this info hash while one is queued
-	// or awaiting a response. An overwritten callback would never complete.
-	auto const active = m_callbacks.find(req.info_hash);
-	bool const in_flight = active != m_callbacks.end() && active->second.pending;
-	bool const queued = std::any_of(m_pending.begin(), m_pending.end(),
-		[&](auto const& item) {
-			auto const* pending = std::get_if<tracker_request>(&std::get<0>(item));
-			return pending && pending->info_hash == req.info_hash;
-		});
-	if (in_flight || queued)
-	{
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto c = cb.lock())
-			c->debug_log("*** WEBSOCKET_TRACKER_DUPLICATE_ANNOUNCE [ url: %s connection: %p "
-				"info_hash: %s in-flight: %d queued: %d ]", req.url.c_str(),
-				static_cast<void const*>(this),
-				aux::to_hex({req.info_hash.data(), 20}).c_str(), int(in_flight), int(queued));
-#endif
-		post(m_io_context, [cb, rejected_req = std::move(req)] {
-			report_error(cb, rejected_req, errors::announce_skipped, operation_t::bittorrent);
-		});
-		return;
-	}
-
 	time_point const deadline = request_deadline(req);
 	m_pending.emplace_back(tracker_message{std::move(req)}, cb, deadline);
 	update_announce_timer();
@@ -297,20 +272,7 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 
 bool websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	// An RTC answer may arrive after the manager replaces this connection.
-	// Being open alone does not imply this socket still owns the tracker URL.
-	if (!is_open() || !is_current())
-	{
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto cb = requester())
-			cb->debug_log("*** WEBSOCKET_TRACKER_ANSWER_DROPPED [ url: %s connection: %p "
-				"generation: %llu reason: %s ]", tracker_req().url.c_str(),
-				static_cast<void const*>(this),
-				static_cast<unsigned long long>(m_generation),
-				is_open() ? "not-current" : "connection-closed");
-#endif
-		return false;
-	}
+	if (!is_open()) return false;
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
@@ -373,25 +335,6 @@ void websocket_tracker_connection::send_pending()
 		[this, cb = callback, deadline_copy = deadline](auto const& m) {
 			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
 			{
-				auto const existing = m_callbacks.find(m.info_hash);
-				if (existing != m_callbacks.end() && existing->second.pending)
-				{
-					// Defensive check even if a duplicate bypassed queue_request().
-#ifndef TORRENT_DISABLE_LOGGING
-					if (auto c = cb.lock())
-					{
-						c->debug_log("*** WEBSOCKET_TRACKER_DUPLICATE_SEND [ url: %s connection: %p "
-							"info_hash: %s ]", m.url.c_str(), static_cast<void const*>(this),
-							aux::to_hex({m.info_hash.data(), 20}).c_str());
-					}
-#endif
-					post(m_io_context, [cb, req = m] {
-						report_error(cb, req, errors::announce_skipped, operation_t::bittorrent);
-					});
-					m_sending = false;
-					send_pending();
-					return;
-				}
 #ifndef TORRENT_DISABLE_LOGGING
 				if (auto c = cb.lock())
 				{
@@ -619,18 +562,6 @@ void websocket_tracker_connection::on_timeout(error_code const& ec)
 void websocket_tracker_connection::on_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
-	if (!is_current())
-	{
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto cb = requester())
-			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
-				"generation: %llu stage: connect ]",
-				tracker_req().url.c_str(), static_cast<void const*>(this),
-				static_cast<unsigned long long>(m_generation));
-#endif
-		close();
-		return;
-	}
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
 		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT_COMPLETE [ url: %s connection: %p error: %s ]",
@@ -657,9 +588,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 #ifndef TORRENT_DISABLE_LOGGING
 		if (auto cb = requester())
 			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
-				"generation: %llu stage: read ]",
-				tracker_req().url.c_str(), static_cast<void const*>(this),
-				static_cast<unsigned long long>(m_generation));
+				"stage: read ]",
+				tracker_req().url.c_str(), static_cast<void const*>(this));
 #endif
 		close();
 		return;
@@ -806,23 +736,21 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 			// alive or reconnect it just to send a late answer.
 			response.offer->answer_callback =
 				[hash = info_hash,
-					weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())](
-					peer_id const& local_pid, aux::rtc_answer const& answer) {
+					weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())
+#ifndef TORRENT_DISABLE_LOGGING
+					, weak_logger = std::weak_ptr<request_callback>(cb)
+					, tracker_url = tracker_req().url
+#endif
+				](peer_id const& local_pid, aux::rtc_answer const& answer) {
 					auto self = weak_self.lock();
 					if (!self)
-						return;
-					if (!self->is_open() || !self->is_current())
 					{
 #ifndef TORRENT_DISABLE_LOGGING
-						if (auto answer_logger = self->requester())
-							answer_logger->debug_log(
-								"*** WEBSOCKET_TRACKER_ANSWER_DROPPED [ url: %s connection: %p "
-								"info_hash: %s reason: %s generation: %llu ]",
-								self->tracker_req().url.c_str(),
-								static_cast<void const*>(self.get()),
-								aux::to_hex({hash.data(), 20}).c_str(),
-								self->is_open() ? "not-current" : "connection-closed",
-								static_cast<unsigned long long>(self->generation()));
+						if (auto logger = weak_logger.lock())
+							logger->debug_log(
+								"*** WEBSOCKET_TRACKER_ANSWER_DROPPED [ url: %s info_hash: %s "
+								"reason: expired-connection ]",
+								tracker_url.c_str(), aux::to_hex({hash.data(), 20}).c_str());
 #endif
 						return;
 					}
@@ -863,18 +791,6 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 void websocket_tracker_connection::on_write(error_code const& ec, std::size_t bytes_written)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_write");
-	if (!is_current())
-	{
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto cb = requester())
-			cb->debug_log("*** WEBSOCKET_TRACKER_STALE_CALLBACK [ url: %s connection: %p "
-				"generation: %llu stage: write ]",
-				tracker_req().url.c_str(), static_cast<void const*>(this),
-				static_cast<unsigned long long>(m_generation));
-#endif
-		close();
-		return;
-	}
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
 		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE_COMPLETE [ url: %s connection: %p bytes: %ld "
