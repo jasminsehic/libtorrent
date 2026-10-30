@@ -85,7 +85,7 @@ private:
 	void on_connect(error_code const& ec);
 	void on_read(error_code ec, std::size_t bytes_read);
 	void on_write(error_code const& ec, std::size_t bytes_written);
-	time_point request_deadline(tracker_request const& req) const;
+	time_point request_deadline() const;
 	void update_announce_timer();
 	void on_announce_timeout(error_code const& ec);
 	// wraps tracker_connection::fail
@@ -128,9 +128,8 @@ private:
 	std::map<sha1_hash, callback_entry> m_callbacks;
 	std::map<sha1_hash, int> m_offer_quota;
 	deadline_timer m_announce_timer;
-	time_point m_write_started = min_time();
+
 	bool m_sending = false;
-	std::optional<sha1_hash> m_sending_request;
 };
 
 struct websocket_tracker_response {

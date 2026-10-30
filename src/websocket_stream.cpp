@@ -79,6 +79,16 @@ void websocket_stream::close()
 	}
 }
 
+void websocket_stream::abort()
+{
+	if (auto handler = std::exchange(m_connect_handler, nullptr))
+		post(m_io_service, std::bind(std::move(handler), error::operation_aborted));
+
+	m_keepalive_timer.cancel();
+	m_open = false;
+	terminate_socket();
+}
+
 close_reason_t websocket_stream::get_close_reason()
 {
 	return close_reason_t::none;

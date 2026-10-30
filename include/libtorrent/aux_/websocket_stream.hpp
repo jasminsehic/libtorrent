@@ -91,6 +91,7 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 	websocket_stream(websocket_stream&&) noexcept = delete;
 
 	void close();
+	void abort();
 	void close(error_code const&) { close(); }
 	close_reason_t get_close_reason();
 

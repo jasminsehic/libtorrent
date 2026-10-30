@@ -15,7 +15,6 @@ see LICENSE file.
 #if TORRENT_USE_RTC
 
 #include "libtorrent/aux_/escape_string.hpp"
-#include "libtorrent/hex.hpp"
 #include "libtorrent/aux_/session_settings.hpp"
 #include "libtorrent/aux_/websocket_tracker_connection.hpp"
 #include "libtorrent/aux_/utf8.hpp"
@@ -105,10 +104,7 @@ void websocket_tracker_connection::start()
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT [ url: %s connection: %p queued: %ld ]",
-			req.url.c_str(),
-			static_cast<void const*>(this),
-			long(m_pending.size()));
+		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT [ url: %s ]", req.url.c_str());
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
@@ -124,20 +120,14 @@ void websocket_tracker_connection::close()
 
 void websocket_tracker_connection::close(error_code const& ec, operation_t const op)
 {
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_CLOSE [ url: %s connection: %p error: %s queued: %ld "
-					  "callbacks: %ld ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			ec.message().c_str(),
-			long(m_pending.size()),
-			long(m_callbacks.size()));
-#endif
 	m_announce_timer.cancel();
 	if (m_websocket)
 	{
-		m_websocket->close();
+		// An unresponsive tracker cannot be relied on to complete the close handshake.
+		if (op == operation_t::timer)
+			m_websocket->abort();
+		else
+			m_websocket->close();
 		m_websocket.reset();
 	}
 
@@ -165,18 +155,6 @@ void websocket_tracker_connection::close(error_code const& ec, operation_t const
 	// closing) rather than merely being aborted.
 	for (auto& e : m_callbacks)
 	{
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto cb = e.second.cb.lock())
-		{
-			auto const hash = aux::to_hex({e.first.data(), 20});
-			cb->debug_log("*** WEBSOCKET_TRACKER_CALLBACK_CLEAR [ url: %s connection: %p "
-						  "info_hash: %s reason: close pending: %d ]",
-				tracker_req().url.c_str(),
-				static_cast<void const*>(this),
-				hash.c_str(),
-				int(e.second.pending));
-		}
-#endif
 		if (!e.second.pending)
 			continue;
 		e.second.pending = false;
@@ -244,48 +222,20 @@ bool websocket_tracker_connection::prune_non_stopped_requests()
 
 void websocket_tracker_connection::queue_request(tracker_request req, std::weak_ptr<request_callback> cb)
 {
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto c = cb.lock())
-	{
-		auto const hash = aux::to_hex({req.info_hash.data(), 20});
-		c->debug_log("*** WEBSOCKET_TRACKER_QUEUE_REQUEST [ url: %s connection: %p info_hash: %s "
-					 "open: %d queued: %ld ]",
-			req.url.c_str(),
-			static_cast<void const*>(this),
-			hash.c_str(),
-			int(is_open()),
-			long(m_pending.size()));
-	}
-#endif
 	m_pending.emplace_back(tracker_message{std::move(req)}, cb);
 	if (is_open()) send_pending();
 }
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto cb = requester())
-	{
-		auto const hash = aux::to_hex({ans.info_hash.data(), 20});
-		cb->debug_log("*** WEBSOCKET_TRACKER_QUEUE_ANSWER [ url: %s connection: %p info_hash: %s ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			hash.c_str());
-	}
-#endif
-	m_pending.emplace_back(
-		tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
+	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
 	if (is_open()) send_pending();
 }
 
-time_point websocket_tracker_connection::request_deadline(tracker_request const& req) const
+time_point websocket_tracker_connection::request_deadline() const
 {
-	auto const& settings = m_man.settings();
-	int const timeout = req.event == event_t::stopped
-		? settings.get_int(settings_pack::stop_tracker_timeout)
-		: settings.get_int(settings_pack::tracker_completion_timeout);
-	if (timeout <= 0)
-		return max_time();
+	int const timeout = m_man.settings().get_int(settings_pack::tracker_completion_timeout);
+	if (timeout <= 0) return max_time();
 	return clock_type::now() + seconds(timeout);
 }
 
@@ -299,124 +249,76 @@ void websocket_tracker_connection::update_announce_timer()
 		if (entry.pending)
 			earliest = std::min(earliest, entry.deadline);
 	}
-	if (earliest == max_time())
-		return;
+	if (earliest == max_time()) return;
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_announce_timeout");
 	m_announce_timer.expires_at(earliest);
 	m_announce_timer.async_wait(
 		std::bind(&websocket_tracker_connection::on_announce_timeout, shared_from_this(), _1));
 }
 
+void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
+{
+	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	if (ec) return;
+
+	auto const now = clock_type::now();
+	auto const expired = std::find_if(m_callbacks.begin(), m_callbacks.end(),
+		[now](auto const& entry) {
+			return entry.second.pending && entry.second.deadline <= now;
+		});
+	if (expired == m_callbacks.end())
+	{
+		update_announce_timer();
+		return;
+	}
+
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+		cb->debug_log("*** WEBSOCKET_TRACKER_ANNOUNCE_TIMEOUT [ url: %s ]",
+			tracker_req().url.c_str());
+#endif
+
+	// A timed-out announce invalidates the shared WebSocket, including all
+	// other outstanding announces. A subsequent announce opens a new connection.
+	close(error_code(errors::timed_out), operation_t::timer);
+}
+
 void websocket_tracker_connection::send_pending()
 {
-	if (m_sending || m_pending.empty())
-		return;
+	if (m_sending || m_pending.empty()) return;
+
 	m_sending = true;
+
 	auto [msg, callback] = std::move(m_pending.front());
 	m_pending.pop_front();
+
 	std::visit(
 		[this, cb = callback](auto const& m) {
+			// record every sent request, even ones whose callback has
+			// already expired, so m_callbacks always reflects whether the
+			// connection's current request is still pending (used by
+			// prune_non_stopped_requests()); a dead callback just means
+			// nothing is invoked when its outcome is reported.
 			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
 			{
-#ifndef TORRENT_DISABLE_LOGGING
-				if (auto c = cb.lock())
-				{
-					auto const previous = m_callbacks.find(m.info_hash);
-					auto const hash = aux::to_hex({m.info_hash.data(), 20});
-					c->debug_log("*** WEBSOCKET_TRACKER_CALLBACK_SET [ url: %s connection: %p "
-								 "info_hash: %s replaced: %d previous-pending: %d ]",
-						m.url.c_str(),
-						static_cast<void const*>(this),
-						hash.c_str(),
-						int(previous != m_callbacks.end()),
-						int(previous != m_callbacks.end() && previous->second.pending));
-				}
+			// torrent invariants ensure at most one request per info_hash
+			// is ever in flight at a time, so this must never overwrite a
+			// still-pending entry
+#if TORRENT_USE_ASSERTS
+				auto const existing = m_callbacks.find(m.info_hash);
+				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
 #endif
-				m_callbacks[m.info_hash] =
-					callback_entry{cb, m, true, request_deadline(m)};
-				m_sending_request = m.info_hash;
+				m_callbacks[m.info_hash] = callback_entry{cb, m, true, request_deadline()};
 			}
-			else
-				m_sending_request.reset();
+
 			if (cb.lock())
 				m_requester = cb;
+
 			do_send(m);
 			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
 				update_announce_timer();
 		},
 		msg);
-}
-
-void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
-{
-	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
-	if (ec == boost::asio::error::operation_aborted)
-		return;
-	auto const now = clock_type::now();
-	std::vector<std::pair<std::weak_ptr<request_callback>, tracker_request>> timed_out;
-	bool connection_dead = false;
-
-	for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
-	{
-		if (!it->second.pending || it->second.deadline > now)
-		{
-			++it;
-			continue;
-		}
-		// An expired announce deadline requires replacing the connection.
-		connection_dead = true;
-#ifndef TORRENT_DISABLE_LOGGING
-		if (auto c = it->second.cb.lock())
-		{
-			auto const hash = aux::to_hex({it->first.data(), 20});
-			c->debug_log("*** WEBSOCKET_TRACKER_CALLBACK_TIMEOUT [ url: %s connection: %p "
-						 "info_hash: %s sending: %d ]",
-				tracker_req().url.c_str(),
-				static_cast<void const*>(this),
-				hash.c_str(),
-				int(m_sending_request && *m_sending_request == it->first));
-		}
-#endif
-		timed_out.emplace_back(it->second.cb, it->second.req);
-		m_offer_quota.erase(it->first);
-		it = m_callbacks.erase(it);
-	}
-
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_TIMEOUT [ url: %s connection: %p timed-out: %d "
-					  "connection-dead: %d ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			int(timed_out.size()),
-			int(connection_dead));
-#endif
-	if (connection_dead)
-	{
-		for (auto it = m_callbacks.begin(); it != m_callbacks.end();)
-		{
-			if (!it->second.pending)
-			{
-				++it;
-				continue;
-			}
-			timed_out.emplace_back(it->second.cb, it->second.req);
-			m_offer_quota.erase(it->first);
-			it = m_callbacks.erase(it);
-		}
-		close(error::operation_aborted, operation_t::unknown);
-	}
-	for (auto const& [cb, req] : timed_out)
-	{
-		if (auto c = cb.lock())
-			c->tracker_request_error(req,
-				errors::timed_out,
-				operation_t::timer,
-				"tracker announce timed out",
-				seconds32{120});
-	}
-	if (!connection_dead)
-		update_announce_timer();
 }
 
 void websocket_tracker_connection::do_send(tracker_request const& req)
@@ -466,7 +368,6 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE [ size: %ld, data: %s ]", long(m_write_data.size()), m_write_data.c_str());
 #endif
 
-	m_write_started = clock_type::now();
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
 	m_websocket->async_write(boost::asio::const_buffer(m_write_data.data(), m_write_data.size())
 			, std::bind(&websocket_tracker_connection::on_write, shared_from_this(), _1, _2));
@@ -495,7 +396,6 @@ void websocket_tracker_connection::do_send(tracker_answer const& ans)
 				, long(m_write_data.size()), m_write_data.c_str());
 #endif
 
-	m_write_started = clock_type::now();
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
 	m_websocket->async_write(boost::asio::const_buffer(m_write_data.data(), m_write_data.size())
 			, std::bind(&websocket_tracker_connection::on_write, shared_from_this(), _1, _2));
@@ -534,13 +434,6 @@ void websocket_tracker_connection::on_timeout(error_code const& ec)
 void websocket_tracker_connection::on_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT_COMPLETE [ url: %s connection: %p error: %s ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			ec.message().c_str());
-#endif
 	if (ec)
 	{
 		fail(ec, operation_t::connect);
@@ -587,10 +480,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		if (auto cb = requester())
 		{
 			TORRENT_ASSERT(std::holds_alternative<std::string>(ret));
-			cb->debug_log("*** WEBSOCKET_TRACKER_READ [ url: %s connection: %p ERROR: %s ]",
-				tracker_req().url.c_str(),
-				static_cast<void const*>(this),
-				std::get<std::string>(ret).c_str());
+			cb->debug_log("*** WEBSOCKET_TRACKER_READ [ ERROR: %s ]", std::get<std::string>(ret).c_str());
 		}
 #endif
 		fail(ec, operation_t::handshake);
@@ -605,11 +495,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	{
 #ifndef TORRENT_DISABLE_LOGGING
 		if (auto cb = requester())
-			cb->debug_log("*** WEBSOCKET_TRACKER_READ [ url: %s connection: %p ignoring failure "
-						  "reason without an "
+			cb->debug_log("*** WEBSOCKET_TRACKER_READ [ ignoring failure reason without an "
 						  "info_hash: %s ]",
-				tracker_req().url.c_str(),
-				static_cast<void const*>(this),
 				response.failure_reason.c_str());
 #endif
 		return;
@@ -622,33 +509,11 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	if (cit != m_callbacks.end())
 		cb = cit->second.cb.lock();
 
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto logger = cb ? cb : requester())
-	{
-		auto const hash = aux::to_hex({info_hash.data(), 20});
-		logger->debug_log(
-			"*** WEBSOCKET_TRACKER_RESPONSE [ url: %s connection: %p info_hash: %s callback: %d "
-			"pending: %d announce: %d offer: %d answer: %d failure: %d ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			hash.c_str(),
-			int(bool(cb)),
-			int(cit != m_callbacks.end() && cit->second.pending),
-			int(bool(response.resp)),
-			int(bool(response.offer)),
-			int(bool(response.answer)),
-			int(!response.failure_reason.empty()));
-	}
-#endif
-
 	if (!cb)
 	{
 #ifndef TORRENT_DISABLE_LOGGING
 		if (auto cb_ = requester())
-			cb_->debug_log("*** WEBSOCKET_TRACKER_READ [ url: %s connection: %p warning: no "
-						   "callback for info_hash ]",
-				tracker_req().url.c_str(),
-				static_cast<void const*>(this));
+			cb_->debug_log("*** WEBSOCKET_TRACKER_READ [ warning: no callback for info_hash ]");
 #endif
 		m_callbacks.erase(info_hash);
 		m_offer_quota.erase(info_hash);
@@ -665,13 +530,6 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		{
 			// mark it so close() won't also report an error for it
 			cit->second.pending = false;
-#ifndef TORRENT_DISABLE_LOGGING
-			cb->debug_log("*** WEBSOCKET_TRACKER_CALLBACK_COMPLETE [ url: %s connection: %p "
-						  "info_hash: %s outcome: failure ]",
-				tracker_req().url.c_str(),
-				static_cast<void const*>(this),
-				aux::to_hex({info_hash.data(), 20}).c_str());
-#endif
 
 			cb->tracker_request_error(cit->second.req,
 				errors::tracker_failure,
@@ -718,36 +576,16 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		// requester; mark it so close() won't also report an error
 		// for it.
 		cit->second.pending = false;
-#ifndef TORRENT_DISABLE_LOGGING
-		cb->debug_log("*** WEBSOCKET_TRACKER_CALLBACK_COMPLETE [ url: %s connection: %p info_hash: "
-					  "%s outcome: response ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			aux::to_hex({info_hash.data(), 20}).c_str());
-#endif
 
 		cb->tracker_response(cit->second.req, {}, {}, *response.resp);
 		update_announce_timer();
 	}
 }
 
-void websocket_tracker_connection::on_write(error_code const& ec, std::size_t bytes_written)
+void websocket_tracker_connection::on_write(error_code const& ec, std::size_t /* bytes_written */)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_write");
-#ifndef TORRENT_DISABLE_LOGGING
-	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE_COMPLETE [ url: %s connection: %p bytes: %ld "
-					  "elapsed-ms: %lld error: %s ]",
-			tracker_req().url.c_str(),
-			static_cast<void const*>(this),
-			long(bytes_written),
-			static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
-				clock_type::now() - m_write_started)
-									   .count()),
-			ec.message().c_str());
-#endif
 	m_write_data.clear();
-	m_sending_request.reset();
 	m_sending = false;
 	if (ec)
 	{
