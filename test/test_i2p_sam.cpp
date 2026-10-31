@@ -15,12 +15,15 @@ see LICENSE file.
 #include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 using namespace lt;
 
@@ -122,6 +125,7 @@ private:
 	void accept_next()
 	{
 		auto c = std::make_shared<client>(m_io, *this);
+		m_clients.push_back(c);
 		m_acceptor.async_accept(c->socket, [this, c](error_code const& ec) {
 			if (ec)
 				return;
@@ -134,6 +138,25 @@ private:
 	tcp::acceptor m_acceptor;
 	std::thread m_worker;
 	std::atomic<int> m_accept_count{0};
+	std::vector<std::shared_ptr<client>> m_clients;
+
+public:
+	// Close the SAM side of outstanding STREAM ACCEPT reads before the
+	// libtorrent session shuts down. Keep all socket operations on the
+	// mock bridge's io_context thread.
+	void close_connections()
+	{
+		std::promise<void> completed;
+		auto ready = completed.get_future();
+		boost::asio::post(m_io, [this, &completed] {
+			error_code ignored;
+			m_acceptor.close(ignored);
+			for (auto const& c : m_clients)
+				c->socket.close(ignored);
+			completed.set_value();
+		});
+		ready.wait();
+	}
 };
 }
 #endif // TORRENT_USE_I2P
@@ -153,5 +176,8 @@ TORRENT_TEST(i2p_acceptor_recovers_after_eof)
 	for (int i = 0; i < 200 && bridge.accept_count() < 2; ++i)
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	TEST_CHECK(bridge.accept_count() >= 2);
+	// The mock must not leave an I2P accept socket waiting for data while
+	// the session destructor attempts to cancel it (notably on Windows).
+	bridge.close_connections();
 #endif
 }
