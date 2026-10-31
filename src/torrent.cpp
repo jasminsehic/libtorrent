@@ -6670,19 +6670,34 @@ namespace {
 
 		error_code ec;
 		auto endpoint = s.remote_endpoint(ec);
-		if(ec)
+		if (ec)
 		{
-			// This can happen if the peer immediately disconnects
+			// This can happen if the peer immediately disconnects.
 #ifndef TORRENT_DISABLE_LOGGING
-			debug_log("failed to get RTC stream remote endpoint: %s", ec.message().c_str());
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=0 reason=remote_endpoint_error code=%d"
+					, ec.value());
 #endif
 			return;
 		}
 
 		need_peer_list();
 		torrent_state st = get_peer_list_state();
-		if(torrent_peer* peerinfo = m_peer_list->add_rtc_peer(endpoint, peer_source_flags_t{}, {}, &st))
+		if (torrent_peer* peerinfo = m_peer_list->add_rtc_peer(endpoint, peer_source_flags_t{}, {}, &st))
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=1");
+#endif
 			create_peer_connection(peerinfo, std::move(s), std::move(endpoint));
+		}
+		else
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=0 reason=peer_list_rejected");
+#endif
+		}
 	}
 #endif
 
