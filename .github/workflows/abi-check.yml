@@ -46,6 +46,7 @@ jobs:
         if: steps.config.outputs.baseline != '' && steps.cache-baseline.outputs.cache-hit != 'true'
         uses: actions/checkout@v6
         with:
+           repository: arvidn/libtorrent
            ref: ${{ steps.config.outputs.baseline }}
            path: baseline
            fetch-depth: 1

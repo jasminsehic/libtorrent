@@ -124,7 +124,7 @@ void test_webtorrent_ice_server_configuration()
 				++observed;
 				TEST_CHECK(config.iceTransportPolicy == (relay_only
 					? rtc::TransportPolicy::Relay : rtc::TransportPolicy::All));
-				TEST_EQUAL(config.iceServers.size(), relay_only ? 2 : 4);
+				TEST_EQUAL(config.iceServers.size(), relay_only ? 2u : 4u);
 				int stun = 0;
 				int turn = 0;
 				for (auto const& server : config.iceServers)

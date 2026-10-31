@@ -106,6 +106,10 @@ async def handle(websocket):
 
             if mode == 'failure':
                 await websocket.send(json.dumps({
+                    "failure reason": "test failure",
+                    "info_hash": info_hash}))
+                continue
+
             if mode == 'offer-close':
                 await websocket.send(json.dumps({
                     "action": "announce",
@@ -114,10 +118,6 @@ async def handle(websocket):
                     "peer_id": "98765432109876543210",
                     "offer": {"type": "offer", "sdp": "v=0\\r\\n"}}))
                 await websocket.close()
-                continue
-
-                    "failure reason": "test failure",
-                    "info_hash": info_hash}))
                 continue
 
             if mode == 'bare-failure':
