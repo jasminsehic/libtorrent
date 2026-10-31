@@ -448,8 +448,13 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 		, config.iceTransportPolicy == rtc::TransportPolicy::Relay ? "relay" : "all");
 	if (relay_only && config.iceServers.empty())
 		debug_log("PRIVACY_TRACE ICE_NO_TURN fail_closed=1");
+#else
+	(void)accepted_stun;
+	(void)accepted_turn;
+	(void)rejected_servers;
 #endif
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
+#ifndef TORRENT_DISABLE_LOGGING
 	pc->onLocalCandidate([weak_this = weak_from_this(), relay_only](rtc::Candidate candidate) {
 		if (auto self = weak_this.lock())
 			post(self->m_io_context, [self, relay_only, type = candidate.type()] {
@@ -460,6 +465,7 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 #endif
 			});
 	});
+#endif
 	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler, relay_only]
 		(rtc::PeerConnection::State state)
 	{
@@ -469,6 +475,7 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 		if (!self || !pc_) return;
 
 		post(self->m_io_context, [self, weak_pc, state, relay_only] {
+			(void)relay_only;
 			auto connected_pc = weak_pc.lock();
 			if (!connected_pc) return;
 #ifndef TORRENT_DISABLE_LOGGING

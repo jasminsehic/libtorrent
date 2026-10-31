@@ -104,7 +104,7 @@ void websocket_tracker_connection::start()
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		{
+	{
 		bool const proxied = proxy.type != settings_pack::none && proxy.proxy_tracker_connections;
 		cb->debug_log("PRIVACY_TRACE WS_PROXY decision=%s type=%d tracker_proxy_enabled=%d "
 			"remote_dns_requested=%d scheme=%s"
