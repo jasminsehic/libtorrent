@@ -984,6 +984,7 @@ TEST_SOURCES = \
   test_resume.cpp \
   test_rtc.cpp \
   test_session.cpp \
+  test_i2p_sam.cpp \
   test_session_params.cpp \
   test_settings_pack.cpp \
   test_sha1_hash.cpp \
