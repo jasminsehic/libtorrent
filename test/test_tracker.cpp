@@ -1067,6 +1067,97 @@ TORRENT_TEST(websocket_tracker_recovers_when_pongs_stop)
 	stop_websocket_server();
 }
 
+// Pongs must keep a connection alive while an announce response is delayed.
+TORRENT_TEST(websocket_tracker_pongs_keep_delayed_announce_alive)
+{
+	int const port = start_websocket_server(false, 30, "pong");
+	{
+		lt::session s(websocket_tracker_settings());
+		torrent_handle const h = add_websocket_tracker_torrent(
+			s, "tmp_websocket_pong_tracker", websocket_tracker_url(port));
+
+		auto const initial = count_tracker_alerts(s, seconds(5));
+		TEST_EQUAL(initial.replies, 2);
+		TEST_EQUAL(initial.errors, 0);
+
+		h.force_reannounce(0, torrent_handle::ignore_min_interval | torrent_handle::high_priority);
+
+		// The server delays the response for 22 seconds without sending application
+		// data. It answers pings, and refuses announces on replacement connections,
+		// so a reconnect cannot make this test pass accidentally.
+		auto const delayed = count_tracker_alerts(s, seconds(25));
+		TEST_EQUAL(delayed.replies, 2);
+		TEST_EQUAL(delayed.errors, 0);
+	}
+	stop_websocket_server();
+}
+
+#if TORRENT_USE_I2P
+// ICE/STUN must never start for strict I2P torrents.
+TORRENT_TEST(websocket_tracker_privacy_no_stun)
+{
+	auto check_stun = [](char const* path,
+		std::string const& tracker,
+		bool const i2p_torrent,
+		settings_pack pack,
+		bool const expect_stun = false) {
+		io_context ios;
+		udp::socket stun_listener(ios, udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
+		pack.set_str(settings_pack::webtorrent_stun_server,
+			"127.0.0.1:" + std::to_string(stun_listener.local_endpoint().port()));
+		{
+			lt::session s(pack);
+			add_websocket_tracker_torrent(s, path, tracker, i2p_torrent);
+			auto const counts = count_tracker_alerts(s, seconds(2));
+			TEST_EQUAL(counts.replies, 0);
+			error_code ec;
+			TEST_EQUAL(stun_listener.available(ec) > 0, expect_stun);
+			TEST_CHECK(!ec);
+		}
+	};
+
+	// Positive control: verify that the local listener detects ICE/STUN traffic.
+	check_stun(
+		"tmp_rtc_direct", "ws://127.0.0.1:1/announce", false, websocket_tracker_settings(), true);
+
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, false);
+		check_stun("tmp_rtc_strict_public", "ws://127.0.0.1:1/announce", true, pack);
+		check_stun("tmp_rtc_strict_i2p", "ws://tracker.b32.i2p/announce", true, pack);
+#if TORRENT_USE_SSL
+		check_stun("tmp_rtc_strict_public_wss", "wss://127.0.0.1:1/announce", true, pack);
+		check_stun("tmp_rtc_strict_i2p_wss", "wss://tracker.b32.i2p/announce", true, pack);
+#endif
+	}
+	{
+		// Mixed mode permits ordinary WebRTC and ICE/STUN for I2P torrents.
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, true);
+		check_stun("tmp_rtc_mixed_public", "ws://127.0.0.1:1/announce", true, pack, true);
+	}
+}
+#endif
+
+#if TORRENT_USE_I2P
+// The strict-mode gate must not prevent explicitly mixed I2P torrents from
+// announcing to an ordinary WebSocket tracker in a direct-IP session.
+TORRENT_TEST(websocket_tracker_i2p_mixed_allowed)
+{
+	int const port = start_websocket_server();
+	{
+		settings_pack pack = websocket_tracker_settings();
+		pack.set_bool(settings_pack::allow_i2p_mixed, true);
+		lt::session s(pack);
+		add_websocket_tracker_torrent(
+			s, "tmp_rtc_mixed_allowed", websocket_tracker_url(port), true);
+		auto const counts = count_tracker_alerts(s, seconds(6), 2);
+		TEST_EQUAL(counts.replies, 2);
+		TEST_EQUAL(counts.errors, 0);
+	}
+	stop_websocket_server();
+}
+
 namespace {
 
 void test_websocket_tracker_proxy(
@@ -1209,73 +1300,6 @@ TORRENT_TEST(websocket_tracker_proxy_success)
 #endif
 }
 
-#if TORRENT_USE_I2P
-// ICE/STUN must never start for strict I2P torrents.
-TORRENT_TEST(websocket_tracker_privacy_no_stun)
-{
-	auto check_stun = [](char const* path,
-		std::string const& tracker,
-		bool const i2p_torrent,
-		settings_pack pack,
-		bool const expect_stun = false) {
-		io_context ios;
-		udp::socket stun_listener(ios, udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
-		pack.set_str(settings_pack::webtorrent_stun_server,
-			"127.0.0.1:" + std::to_string(stun_listener.local_endpoint().port()));
-		{
-			lt::session s(pack);
-			add_websocket_tracker_torrent(s, path, tracker, i2p_torrent);
-			auto const counts = count_tracker_alerts(s, seconds(2));
-			TEST_EQUAL(counts.replies, 0);
-			error_code ec;
-			TEST_EQUAL(stun_listener.available(ec) > 0, expect_stun);
-			TEST_CHECK(!ec);
-		}
-	};
-
-	// Positive control: verify that the local listener detects ICE/STUN traffic.
-	check_stun(
-		"tmp_rtc_direct", "ws://127.0.0.1:1/announce", false, websocket_tracker_settings(), true);
-
-	{
-		settings_pack pack = websocket_tracker_settings();
-		pack.set_bool(settings_pack::allow_i2p_mixed, false);
-		check_stun("tmp_rtc_strict_public", "ws://127.0.0.1:1/announce", true, pack);
-		check_stun("tmp_rtc_strict_i2p", "ws://tracker.b32.i2p/announce", true, pack);
-#if TORRENT_USE_SSL
-		check_stun("tmp_rtc_strict_public_wss", "wss://127.0.0.1:1/announce", true, pack);
-		check_stun("tmp_rtc_strict_i2p_wss", "wss://tracker.b32.i2p/announce", true, pack);
-#endif
-	}
-	{
-		// Mixed mode permits ordinary WebRTC and ICE/STUN for I2P torrents.
-		settings_pack pack = websocket_tracker_settings();
-		pack.set_bool(settings_pack::allow_i2p_mixed, true);
-		check_stun("tmp_rtc_mixed_public", "ws://127.0.0.1:1/announce", true, pack, true);
-	}
-}
-#endif
-
-#if TORRENT_USE_I2P
-// The strict-mode gate must not prevent explicitly mixed I2P torrents from
-// announcing to an ordinary WebSocket tracker in a direct-IP session.
-TORRENT_TEST(websocket_tracker_i2p_mixed_allowed)
-{
-	int const port = start_websocket_server();
-	{
-		settings_pack pack = websocket_tracker_settings();
-		pack.set_bool(settings_pack::allow_i2p_mixed, true);
-		lt::session s(pack);
-		add_websocket_tracker_torrent(
-			s, "tmp_rtc_mixed_allowed", websocket_tracker_url(port), true);
-		auto const counts = count_tracker_alerts(s, seconds(6), 2);
-		TEST_EQUAL(counts.replies, 2);
-		TEST_EQUAL(counts.errors, 0);
-	}
-	stop_websocket_server();
-}
-#endif
-
 #if TORRENT_USE_SSL
 // The bundled test certificate is self-signed. Validation must reject it
 // instead of silently accepting the TLS connection.
@@ -1296,31 +1320,7 @@ TORRENT_TEST(websocket_tracker_certificate_validation)
 	stop_websocket_server();
 }
 #endif
-
-// Pongs must keep a connection alive while an announce response is delayed.
-TORRENT_TEST(websocket_tracker_pongs_keep_delayed_announce_alive)
-{
-	int const port = start_websocket_server(false, 30, "pong");
-	{
-		lt::session s(websocket_tracker_settings());
-		torrent_handle const h = add_websocket_tracker_torrent(
-			s, "tmp_websocket_pong_tracker", websocket_tracker_url(port));
-
-		auto const initial = count_tracker_alerts(s, seconds(5));
-		TEST_EQUAL(initial.replies, 2);
-		TEST_EQUAL(initial.errors, 0);
-
-		h.force_reannounce(0, torrent_handle::ignore_min_interval | torrent_handle::high_priority);
-
-		// The server delays the response for 22 seconds without sending application
-		// data. It answers pings, and refuses announces on replacement connections,
-		// so a reconnect cannot make this test pass accidentally.
-		auto const delayed = count_tracker_alerts(s, seconds(25));
-		TEST_EQUAL(delayed.replies, 2);
-		TEST_EQUAL(delayed.errors, 0);
-	}
-	stop_websocket_server();
-}
+#endif
 
 // a failure reason in response to an announce is reported as a tracker error
 // (it used to leave the announce pending, i.e. "updating", forever)
