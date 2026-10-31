@@ -2531,10 +2531,19 @@ retry:
 		COMPLETE_ASYNC("session_impl::on_i2p_accept");
 		if (e == boost::asio::error::operation_aborted)
 		{
-			// A configuration change may cancel an outstanding STREAM ACCEPT.
-			// Do not destroy its stream from inside the stream's own callback.
+			// Reconfiguration can cancel an outstanding accept. Release the
+			// stream after its callback returns, including when I2P is disabled.
 			if (!m_abort)
-				schedule_i2p_accept_retry();
+			{
+				std::weak_ptr<session_impl> self = shared_from_this();
+				post(m_io_context, [self] {
+					if (auto sp = self.lock())
+					{
+						sp->m_i2p_listen_socket.reset();
+						sp->open_new_incoming_i2p_connection();
+					}
+				});
+			}
 			return;
 		}
 		if (e)

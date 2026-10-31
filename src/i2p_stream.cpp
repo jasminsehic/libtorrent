@@ -75,6 +75,8 @@ namespace libtorrent {
 
 	void i2p_connection::close(error_code& e)
 	{
+		m_state = sam_idle;
+		m_i2p_local_endpoint.clear();
 		if (m_sam_socket) m_sam_socket->close(e);
 	}
 
