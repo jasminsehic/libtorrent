@@ -622,7 +622,9 @@ private:
 	struct client : std::enable_shared_from_this<client>
 	{
 		explicit client(boost::asio::io_context& io, mock_sam_accept_bridge& bridge)
-			: socket(io), parent(bridge) {}
+			: socket(io)
+			, parent(bridge)
+		{}
 
 		void read()
 		{
@@ -648,9 +650,11 @@ private:
 		{
 			auto self = shared_from_this();
 			auto message = std::make_shared<std::string>(std::move(response));
-			boost::asio::async_write(socket, boost::asio::buffer(*message),
+			boost::asio::async_write(socket,
+				boost::asio::buffer(*message),
 				[self, message, close_after](error_code const& ec, std::size_t) {
-					if (ec) return;
+					if (ec)
+						return;
 					if (close_after)
 					{
 						error_code ignored;
@@ -686,7 +690,8 @@ private:
 	{
 		auto c = std::make_shared<client>(m_io, *this);
 		m_acceptor.async_accept(c->socket, [this, c](error_code const& ec) {
-			if (ec) return;
+			if (ec)
+				return;
 			c->read();
 			accept_next();
 		});
