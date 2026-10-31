@@ -462,8 +462,8 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
 #ifndef TORRENT_DISABLE_LOGGING
 	pc->onLocalCandidate([weak_this = weak_from_this(), relay_only](rtc::Candidate candidate) {
-		if (auto self = weak_this.lock())
-			post(self->m_io_context, [weak_this, relay_only, type = candidate.type()] {
+		if (auto signaling = weak_this.lock())
+			post(signaling->m_io_context, [weak_this, relay_only, type = candidate.type()] {
 				auto self = weak_this.lock();
 				if (!self || self->m_closed)
 					return;
@@ -684,7 +684,8 @@ bool rtc_signaling::should_log() const
 TORRENT_FORMAT(2,3)
 void rtc_signaling::debug_log(char const* fmt, ...) const noexcept try
 {
-	if (m_closed || !alerts().should_post<torrent_log_alert>()) return;
+	if (m_closed || !alerts().should_post<torrent_log_alert>())
+		return;
 
 	va_list v;
 	va_start(v, fmt);
