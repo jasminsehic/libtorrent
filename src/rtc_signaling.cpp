@@ -27,17 +27,15 @@ see LICENSE file.
 #include "libtorrent/aux_/disable_warnings_pop.hpp"
 
 #include <cstdarg>
-#include <cstdlib>
-#include <cstring>
 #include <utility>
 #include <sstream>
 #include <mutex>
 #include <algorithm>
 #include <cctype>
 
-// The callback only emits redacted protocol/direction hints when explicitly
-// enabled by QBT_WEBTORRENT_PRIVACY_TRACE=1 (or the same environment variable
-// in another libtorrent client). It never emits raw libdatachannel messages.
+// Always emit redacted protocol/direction hints for privacy diagnostics.
+// Never forward raw libdatachannel messages (which may contain credentials, SDP
+// or network addresses).
 #define DEBUG_RTC 1
 
 namespace libtorrent {
@@ -129,21 +127,11 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 
 	static std::once_flag flag;
 #if DEBUG_RTC
-	bool const trace = [] {
-		char const* const env = std::getenv("QBT_WEBTORRENT_PRIVACY_TRACE");
-		return env != nullptr && std::strcmp(env, "1") == 0;
-	}();
-	if (trace)
-		appender.set_session(&m_torrent->session());
-	std::call_once(flag, [trace]() {
-		if (trace)
-		{
-			using namespace std::placeholders;
-			rtc::InitLogger(rtc::LogLevel::Debug
-				, std::bind(&rtc_log_appender::write, &appender, _1, _2));
-		}
-		else
-			rtc::InitLogger(rtc::LogLevel::None, nullptr);
+	appender.set_session(&m_torrent->session());
+	std::call_once(flag, []() {
+		using namespace std::placeholders;
+		rtc::InitLogger(rtc::LogLevel::Debug
+			, std::bind(&rtc_log_appender::write, &appender, _1, _2));
 	});
 #else
 	std::call_once(flag, []() {
