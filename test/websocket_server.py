@@ -37,8 +37,18 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+connections = 0
+
+
 async def handle(websocket):
+    global connections
+    connections += 1
+    connection_index = connections
+    ignored_info_hash = None
     global connection_count
+    # silent: never respond
+    # silent-first-connection: ignore announces on the first connection only
+    # partial-first-connection: respond to a subset of requests on the first connection
     connection_number = connection_count
     connection_count += 1
 
@@ -71,7 +81,16 @@ async def handle(websocket):
                 file=sys.stderr)
 
             request = json.loads(message)
+            if mode == "silent":
+                continue
+            if mode == "silent-first-connection" and connection_index == 1:
+                continue
             info_hash = request["info_hash"]
+            if mode == 'partial-first-connection' and connection_index == 1:
+                if ignored_info_hash is None:
+                    ignored_info_hash = info_hash
+                if info_hash == ignored_info_hash:
+                    continue
             announce_count += 1
 
             # Let the initial hybrid-torrent announces complete on the first
