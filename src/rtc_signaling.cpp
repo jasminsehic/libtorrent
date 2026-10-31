@@ -159,6 +159,9 @@ alert_manager& rtc_signaling::alerts() const
 
 void rtc_signaling::close()
 {
+	if (m_closed)
+		return;
+	m_closed = true;
 #if DEBUG_RTC
 	// RTC callbacks can keep this object alive after its torrent and session
 	// are destroyed. Detach by owner identity, never by dereferencing m_torrent.
@@ -460,7 +463,10 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 #ifndef TORRENT_DISABLE_LOGGING
 	pc->onLocalCandidate([weak_this = weak_from_this(), relay_only](rtc::Candidate candidate) {
 		if (auto self = weak_this.lock())
-			post(self->m_io_context, [self, relay_only, type = candidate.type()] {
+			post(self->m_io_context, [weak_this, relay_only, type = candidate.type()] {
+				auto self = weak_this.lock();
+				if (!self || self->m_closed)
+					return;
 				self->debug_log(
 					"PRIVACY_TRACE ICE_LOCAL_CANDIDATE type=%d relay_only=%d violation=%d",
 					int(type),
@@ -483,6 +489,8 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 		post(self->m_io_context, [self, weak_pc, state, relay_only] {
 			(void)relay_only;
 			(void)state;
+			if (self->m_closed)
+				return;
 			auto connected_pc = weak_pc.lock();
 			if (!connected_pc)
 				return;
@@ -576,6 +584,8 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 
 void rtc_signaling::on_generated_offer(error_code const& ec, rtc_offer offer)
 {
+	if (m_closed)
+		return;
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling generated offer");
 #endif
@@ -588,6 +598,8 @@ void rtc_signaling::on_generated_offer(error_code const& ec, rtc_offer offer)
 
 void rtc_signaling::on_generated_answer(error_code const& ec, rtc_answer answer, rtc_offer offer)
 {
+	if (m_closed)
+		return;
 	if (ec)
 	{
 		// Ignore
@@ -606,6 +618,8 @@ void rtc_signaling::on_data_channel(error_code const& ec
 		, rtc_offer_id offer_id
 		, std::shared_ptr<rtc::DataChannel> dc)
 {
+	if (m_closed)
+		return;
 	auto it = m_connections.find(offer_id);
 	if (it == m_connections.end())
 		return;
@@ -664,13 +678,13 @@ bool rtc_signaling::offer_batch::is_complete() const
 #ifndef TORRENT_DISABLE_LOGGING
 bool rtc_signaling::should_log() const
 {
-	return alerts().should_post<torrent_log_alert>();
+	return !m_closed && alerts().should_post<torrent_log_alert>();
 }
 
 TORRENT_FORMAT(2,3)
 void rtc_signaling::debug_log(char const* fmt, ...) const noexcept try
 {
-	if (!alerts().should_post<torrent_log_alert>()) return;
+	if (m_closed || !alerts().should_post<torrent_log_alert>()) return;
 
 	va_list v;
 	va_start(v, fmt);

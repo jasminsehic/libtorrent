@@ -126,6 +126,9 @@ private:
 
 	io_context& m_io_context;
 	torrent* m_torrent;
+	// All callbacks that access the torrent run on m_io_context. Once closed,
+	// queued RTC callbacks must not dereference the torrent or its session.
+	bool m_closed = false;
 	rtc_stream_handler m_rtc_stream_handler;
 	rtc_configuration_hook m_rtc_configuration_hook;
 
