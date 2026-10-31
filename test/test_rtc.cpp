@@ -139,6 +139,53 @@ void test_offers()
 	sig->close();
 }
 
+// A connection timeout must complete the offer batch even when ICE gathering
+// never finishes. A silent local STUN endpoint makes this deterministic
+// without depending on a public STUN service.
+void test_offer_timeout_completes_batch()
+{
+	session_mock ses(io_context);
+	ses.mutable_settings().set_int(settings_pack::webtorrent_connection_timeout, 1);
+
+	boost::asio::ip::udp::socket stun_sink(
+		io_context, boost::asio::ip::udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server,
+		"stun:127.0.0.1:" + std::to_string(stun_sink.local_endpoint().port()));
+
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int callbacks = 0;
+	error_code result;
+	auto sig = std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		result = ec;
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(callbacks, 1);
+	TEST_EQUAL(result, boost::asio::error::timed_out);
+
+	// Drain late RTC callbacks to check that the batch stays completed once.
+	boost::asio::steady_timer settle(io_context);
+	settle.expires_after(2s);
+	bool settled = false;
+	settle.async_wait([&settled](error_code const& ec) { settled = !ec; });
+	while (!settled)
+	{
+		if (io_context.stopped())
+			io_context.restart();
+		io_context.run_one();
+	}
+	TEST_EQUAL(callbacks, 1);
+
+	sig->close();
+	stun_sink.close();
+}
+
 void test_connectivity()
 {
 	time_point const start_time = clock_type::now();
@@ -439,10 +486,249 @@ void test_write_exact_chunk_boundary()
 	sig2->close();
 }
 
+void test_offer_creation_failure()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int callbacks = 0;
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[](rtc::Configuration&, rtc_signaling::description_handler const&) {
+			throw std::runtime_error("simulated allocation failure");
+		});
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_EQUAL(ec,
+			boost::system::errc::make_error_code(
+				boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(callbacks, 1);
+	sig->close();
+}
+
+// If a description is queued before setup fails, failure must win.
+// A duplicate description must not be counted as another offer completion.
+void test_offer_creation_failure_ignores_queued_description()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int calls = 0;
+	int injection_count = 0;
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
+			++injection_count;
+			// Queue two successful descriptions before setup fails. Without
+			// the completion guard, the first one would complete the batch.
+			on_description(error_code{}, "queued-description");
+			on_description(error_code{}, "duplicate-description");
+			throw std::runtime_error("simulated post-DataChannel failure");
+		});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++calls;
+		TEST_EQUAL(ec,
+			boost::system::errc::make_error_code(
+				boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(injection_count, 1);
+	TEST_EQUAL(calls, 1);
+	sig->close();
+}
+
+// An extra description from one offer must not consume the next batch.
+void test_offer_duplicate_description_does_not_complete_next_batch()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int injections = 0;
+	int first_calls = 0;
+	int second_calls = 0;
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
+			++injections;
+			if (injections == 1)
+			{
+				on_description(error_code{}, "first-description");
+				on_description(error_code{}, "duplicate-description");
+			}
+			else if (injections == 2)
+			{
+				on_description(error_code{}, "second-description");
+			}
+		});
+
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++first_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		if (!offers.empty())
+			TEST_CHECK(offers[0].sdp == "first-description");
+		if (first_calls == 1 && second_calls == 1)
+			success = true;
+	});
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++second_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		if (!offers.empty())
+			TEST_CHECK(offers[0].sdp == "second-description");
+		if (first_calls == 1 && second_calls == 1)
+			success = true;
+	});
+	run_test();
+	TEST_EQUAL(injections, 2);
+	TEST_EQUAL(first_calls, 1);
+	TEST_EQUAL(second_calls, 1);
+	sig->close();
+}
+
+void test_offer_udp_port_exhaustion_recovery()
+{
+	using udp = boost::asio::ip::udp;
+	udp::socket occupied(
+		io_context, udp::endpoint(boost::asio::ip::make_address_v4("127.0.0.1"), 0));
+	auto const port = occupied.local_endpoint().port();
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[port](rtc::Configuration& config, rtc_signaling::description_handler const&) {
+			config.bindAddress = std::string("127.0.0.1");
+			config.portRangeBegin = port;
+			config.portRangeEnd = port;
+		});
+	int callbacks = 0;
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_CHECK(ec);
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(callbacks, 1);
+
+	occupied.close();
+	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(callbacks, 2);
+	sig->close();
+}
+
+// Two usable offers must still be returned if the final completion fails.
+// Post successful descriptions before a synchronous failure, so the failed
+// offer is deterministically the last completion processed by io_context.
+void test_offer_creation_partial_failure()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int attempts = 0;
+	int descriptions = 0;
+	int callbacks = 0;
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
+			if (++attempts == 3)
+				throw std::runtime_error("simulated final offer failure");
+			++descriptions;
+			on_description(error_code{}, "simulated-successful-description");
+		});
+	sig->generate_offers(3, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 2);
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(attempts, 3);
+	TEST_EQUAL(descriptions, 2);
+	TEST_EQUAL(callbacks, 1);
+	sig->close();
+}
+
+// When no offer can be created, the batch must still report failure.
+void test_offer_creation_all_failed()
+{
+	session_mock ses(io_context);
+	aux::torrent tor(ses,
+		false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int attempts = 0;
+	int callbacks = 0;
+	auto sig = std::make_shared<rtc_signaling>(
+		io_context,
+		&tor,
+		[](rtc_stream_init) {},
+		[&attempts](rtc::Configuration&, rtc_signaling::description_handler const&) {
+			++attempts;
+			throw std::runtime_error("simulated offer failure");
+		});
+	sig->generate_offers(3, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++callbacks;
+		TEST_EQUAL(ec,
+			boost::system::errc::make_error_code(
+				boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
+		success = true;
+	});
+	run_test();
+	TEST_EQUAL(attempts, 3);
+	TEST_EQUAL(callbacks, 1);
+	sig->close();
+}
+
 } // namespace
 
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
 TORRENT_TEST(signaling_offers) { test_offers(); }
+TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
+TORRENT_TEST(signaling_offer_creation_failure_ignores_queued_description)
+{
+	test_offer_creation_failure_ignores_queued_description();
+}
+TORRENT_TEST(signaling_offer_duplicate_description_does_not_complete_next_batch)
+{
+	test_offer_duplicate_description_does_not_complete_next_batch();
+}
+TORRENT_TEST(signaling_offer_creation_partial_failure) { test_offer_creation_partial_failure(); }
+TORRENT_TEST(signaling_offer_creation_all_failed) { test_offer_creation_all_failed(); }
+TORRENT_TEST(signaling_offer_timeout_completes_batch) { test_offer_timeout_completes_batch(); }
+TORRENT_TEST(signaling_offer_udp_port_exhaustion_recovery)
+{
+	test_offer_udp_port_exhaustion_recovery();
+}
 TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }
 TORRENT_TEST(write_exact_chunk_boundary) { test_write_exact_chunk_boundary(); }
