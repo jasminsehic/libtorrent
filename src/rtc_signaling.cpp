@@ -147,10 +147,6 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 rtc_signaling::~rtc_signaling()
 {
 	close();
-
-#if DEBUG_RTC
-	appender.unset_session(&m_torrent->session());
-#endif
 }
 
 alert_manager& rtc_signaling::alerts() const
@@ -160,6 +156,11 @@ alert_manager& rtc_signaling::alerts() const
 
 void rtc_signaling::close()
 {
+#if DEBUG_RTC
+	// RTC callbacks may keep signaling objects alive after close(). Stop
+	// forwarding their logs before the session can be destroyed.
+	appender.unset_session(&m_torrent->session());
+#endif
 	m_connections.clear();
 	m_num_incoming_connections = 0;
 }
