@@ -27,14 +27,18 @@ see LICENSE file.
 #include "libtorrent/aux_/disable_warnings_pop.hpp"
 
 #include <cstdarg>
+#include <cstdlib>
+#include <cstring>
 #include <utility>
 #include <sstream>
 #include <mutex>
 #include <algorithm>
 #include <cctype>
 
-// Enable this to pass libdatachannel log to the last created session
-#define DEBUG_RTC 0
+// The callback only emits redacted protocol/direction hints when explicitly
+// enabled by QBT_WEBTORRENT_PRIVACY_TRACE=1 (or the same environment variable
+// in another libtorrent client). It never emits raw libdatachannel messages.
+#define DEBUG_RTC 1
 
 namespace libtorrent {
 namespace aux {
@@ -74,11 +78,30 @@ public:
 		auto &alerts = m_ses->alerts();
 		if (!alerts.should_post<log_alert>()) return;
 
-		using ::operator<<;
-		std::ostringstream ss;
-		ss << "libdatachannel: ";
-		ss << level  << " " << message;
-		alerts.emplace_alert<log_alert>(ss.str().c_str());
+		(void)level;
+		std::string event(message.begin(), message.end());
+		std::transform(event.begin(), event.end(), event.begin(),
+			[](unsigned char c) { return char(std::tolower(c)); });
+		char const* protocol = nullptr;
+		if (event.find("stun") != std::string::npos) protocol = "stun";
+		else if (event.find("turn") != std::string::npos) protocol = "turn";
+		else if (event.find("ice") != std::string::npos) protocol = "ice";
+		if (!protocol) return;
+		char const* direction = "event";
+		if (event.find("sending") != std::string::npos
+			|| event.find("sent") != std::string::npos
+			|| event.find("send") != std::string::npos)
+			direction = "send";
+		else if (event.find("receiving") != std::string::npos
+			|| event.find("received") != std::string::npos
+			|| event.find("recv") != std::string::npos)
+			direction = "receive";
+		// Only report event classes. Raw library messages can contain
+		// candidate IPs, TURN authentication fields, or sensitive SDP.
+		char const* const label = protocol;
+		std::string const safe = std::string("PRIVACY_TRACE RTC_STACK_HINT protocol=")
+			+ label + " direction=" + direction + " raw=redacted";
+		alerts.emplace_alert<log_alert>(safe.c_str());
 	}
 
 private:
@@ -106,12 +129,21 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 
 	static std::once_flag flag;
 #if DEBUG_RTC
-	std::call_once(flag, [this]() {
+	bool const trace = [] {
+		char const* const env = std::getenv("QBT_WEBTORRENT_PRIVACY_TRACE");
+		return env != nullptr && std::strcmp(env, "1") == 0;
+	}();
+	if (trace)
 		appender.set_session(&m_torrent->session());
-
-		using namespace std::placeholders;
-		rtc::InitLogger(rtc::LogLevel::Debug
+	std::call_once(flag, [trace]() {
+		if (trace)
+		{
+			using namespace std::placeholders;
+			rtc::InitLogger(rtc::LogLevel::Debug
 				, std::bind(&rtc_log_appender::write, &appender, _1, _2));
+		}
+		else
+			rtc::InitLogger(rtc::LogLevel::None, nullptr);
 	});
 #else
 	std::call_once(flag, []() {
