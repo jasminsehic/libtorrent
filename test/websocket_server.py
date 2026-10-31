@@ -17,8 +17,18 @@ logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+connections = 0
+
+
 async def handle(websocket):
+    global connections
+    connections += 1
+    connection_index = connections
+    ignored_info_hash = None
     # the tracker behavior to simulate:
+    # silent: never respond
+    # silent-first-connection: ignore announces on the first connection only
+    # partial-first-connection: respond to a subset of requests on the first connection
     # normal: respond to every announce
     # failure: respond to every announce with a failure reason
     # stale-failure: respond normally, then send a failure reason that isn't
@@ -40,7 +50,16 @@ async def handle(websocket):
                 file=sys.stderr)
 
             request = json.loads(message)
+            if mode == "silent":
+                continue
+            if mode == "silent-first-connection" and connection_index == 1:
+                continue
             info_hash = request["info_hash"]
+            if mode == 'partial-first-connection' and connection_index == 1:
+                if ignored_info_hash is None:
+                    ignored_info_hash = info_hash
+                if info_hash == ignored_info_hash:
+                    continue
 
             if mode == 'failure':
                 await websocket.send(json.dumps({
