@@ -30,6 +30,8 @@ see LICENSE file.
 #include <utility>
 #include <sstream>
 #include <mutex>
+#include <algorithm>
+#include <cctype>
 
 // Enable this to pass libdatachannel log to the last created session
 #define DEBUG_RTC 0
@@ -347,11 +349,57 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 #endif
 
 	rtc::Configuration config;
-	std::string stun_server = m_torrent->settings().get_str(settings_pack::webtorrent_stun_server);
-	if (!stun_server.empty())
-		config.iceServers.emplace_back(std::move(stun_server));
+	bool const relay_only = m_torrent->settings().get_bool(settings_pack::webtorrent_relay_only);
+
+	// The legacy STUN setting also accepts multiple newline-delimited servers.
+	// Only TURN URLs are used in relay-only mode, regardless of STUN settings.
+	auto append_servers = [&](std::string const& servers, rtc::IceServer::Type const expected_type)
+	{
+		std::istringstream input(servers);
+		std::string url;
+		while (std::getline(input, url))
+		{
+			auto const first = url.find_first_not_of(" \t\r");
+			if (first == std::string::npos) continue;
+			auto const last = url.find_last_not_of(" \t\r");
+			url = url.substr(first, last - first + 1);
+			if (expected_type == rtc::IceServer::Type::Stun
+				&& url.find(':') != std::string::npos
+				&& url.compare(0, 5, "stun:") != 0
+				&& url.compare(0, 6, "stuns:") != 0)
+				url.insert(0, "stun:");
+			try
+			{
+				rtc::IceServer server(url);
+				if (server.type == expected_type)
+					config.iceServers.emplace_back(std::move(server));
+			}
+			catch (std::exception const&)
+			{
+				// A malformed ICE server must not prevent other servers from
+				// being used. Do not log the URL: it may contain TURN secrets.
+			}
+		}
+	};
+
+	if (!relay_only)
+		append_servers(m_torrent->settings().get_str(settings_pack::webtorrent_stun_server)
+			, rtc::IceServer::Type::Stun);
+	append_servers(m_torrent->settings().get_str(settings_pack::webtorrent_turn_servers)
+		, rtc::IceServer::Type::Turn);
+
+	if (relay_only)
+		config.iceTransportPolicy = rtc::TransportPolicy::Relay;
 	if (m_rtc_configuration_hook)
 		m_rtc_configuration_hook(config, handler);
+	if (relay_only)
+	{
+		// Enforce the policy even if a configuration hook modifies ICE servers.
+		config.iceTransportPolicy = rtc::TransportPolicy::Relay;
+		config.iceServers.erase(std::remove_if(config.iceServers.begin(), config.iceServers.end()
+			, [](rtc::IceServer const& s) { return s.type != rtc::IceServer::Type::Turn; })
+			, config.iceServers.end());
+	}
 
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
 	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler]

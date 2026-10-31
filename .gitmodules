@@ -9,4 +9,4 @@
 	url = https://github.com/paullouisageneau/boost-asio-gnutls.git
 [submodule "deps/libdatachannel"]
 	path = deps/libdatachannel
-	url = https://github.com/paullouisageneau/libdatachannel.git
+	url = https://github.com/jasminsehic/libdatachannel.git

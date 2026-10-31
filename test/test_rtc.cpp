@@ -104,6 +104,59 @@ void run_test() {
 	TEST_CHECK(success == true);
 }
 
+void test_webtorrent_ice_server_configuration()
+{
+	session_mock ses(io_context);
+	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server,
+		"stun:stun1.example:3478\nstun:stun2.example:3478");
+	ses.mutable_settings().set_str(settings_pack::webtorrent_turn_servers,
+		"turn://alice:secret@turn1.example:3478?transport=udp\n"
+		"turns://bob:pass@turn2.example:5349");
+	aux::torrent tor(ses, false,
+		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
+	int observed = 0;
+	auto make_signaling = [&](bool const relay_only)
+	{
+		ses.mutable_settings().set_bool(settings_pack::webtorrent_relay_only, relay_only);
+		return std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {},
+			[&, relay_only](rtc::Configuration& config, rtc_signaling::description_handler const&)
+			{
+				++observed;
+				TEST_CHECK(config.iceTransportPolicy == (relay_only
+					? rtc::TransportPolicy::Relay : rtc::TransportPolicy::All));
+				TEST_EQUAL(config.iceServers.size(), relay_only ? 2 : 4);
+				int stun = 0;
+				int turn = 0;
+				for (auto const& server : config.iceServers)
+				{
+					if (server.type == rtc::IceServer::Type::Stun) ++stun;
+					if (server.type == rtc::IceServer::Type::Turn)
+					{
+						++turn;
+						if (server.hostname == "turn1.example")
+						{
+							TEST_EQUAL(server.username, "alice");
+							TEST_EQUAL(server.password, "secret");
+						}
+					}
+				}
+				TEST_EQUAL(stun, relay_only ? 0 : 2);
+				TEST_EQUAL(turn, 2);
+			});
+	};
+	{
+		auto sig = make_signaling(false);
+		sig->generate_offers(1, [](error_code const&, std::vector<rtc_offer> const&) {});
+		sig->close();
+	}
+	{
+		auto sig = make_signaling(true);
+		sig->generate_offers(1, [](error_code const&, std::vector<rtc_offer> const&) {});
+		sig->close();
+	}
+	TEST_EQUAL(observed, 2);
+}
+
 void test_offers()
 {
 	time_point const start_time = clock_type::now();
@@ -713,6 +766,7 @@ void test_offer_creation_all_failed()
 
 TORRENT_TEST(parse_endpoint) { test_parse_endpoint(); }
 TORRENT_TEST(signaling_offers) { test_offers(); }
+TORRENT_TEST(webtorrent_ice_server_configuration) { test_webtorrent_ice_server_configuration(); }
 TORRENT_TEST(signaling_offer_creation_failure) { test_offer_creation_failure(); }
 TORRENT_TEST(signaling_offer_creation_failure_ignores_queued_description)
 {
