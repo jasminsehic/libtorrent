@@ -25,6 +25,7 @@ see LICENSE file.
 #include "libtorrent/aux_/scope_end.hpp"
 #include "libtorrent/span.hpp"
 #include "libtorrent/aux_/tracker_manager.hpp"
+#include "libtorrent/aux_/proxy_settings.hpp"
 
 #include "libtorrent/aux_/disable_warnings_push.hpp"
 #include <boost/system/system_error.hpp>
@@ -90,8 +91,9 @@ void websocket_tracker_connection::start()
 
 	auto const& settings = m_man.settings();
 	auto const& req = tracker_req();
-	m_websocket =
-		std::make_shared<aux::websocket_stream>(m_io_context, m_man.host_resolver(), m_ssl_context);
+	proxy_settings const proxy(settings);
+	m_websocket = std::make_shared<aux::websocket_stream>(
+		m_io_context, m_man.host_resolver(), m_ssl_context, proxy);
 
 	// in anonymous mode we omit the user agent to mitigate fingerprinting of
 	// the client. Private torrents is an exception because some private
