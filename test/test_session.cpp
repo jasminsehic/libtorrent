@@ -11,9 +11,8 @@ see LICENSE file.
 
 #include "libtorrent/session.hpp"
 #include "libtorrent/session_params.hpp"
-#include <chrono>
-#include <memory>
 #include <functional>
+#include <thread>
 
 #include "test.hpp"
 #include "setup_transfer.hpp"

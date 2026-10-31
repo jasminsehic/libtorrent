@@ -757,8 +757,6 @@ namespace aux {
 			void on_i2p_open(error_code const& ec);
 			void open_new_incoming_i2p_connection();
 			void on_i2p_accept(error_code const& e);
-			void schedule_i2p_accept_retry();
-			void on_i2p_accept_retry(error_code const& ec);
 			void schedule_i2p_reconnect();
 			void on_i2p_reconnect_timer(error_code const& ec);
 #endif
@@ -1070,11 +1068,8 @@ namespace aux {
 			i2p_connection m_i2p_conn;
 			std::optional<socket_type> m_i2p_listen_socket;
 
-			// Timers for control-session and incoming-acceptor recovery.
+			// Timer for I2P reconnection attempts
 			deadline_timer m_i2p_reconnect_timer;
-			deadline_timer m_i2p_accept_retry_timer;
-			seconds32 m_i2p_accept_retry_delay{1};
-			bool m_i2p_accept_retry_pending = false;
 
 			// Exponential backoff state for I2P reconnection
 			seconds32 m_i2p_reconnect_delay{1};

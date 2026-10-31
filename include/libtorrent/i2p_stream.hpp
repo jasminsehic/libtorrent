@@ -518,11 +518,9 @@ public:
 
 	bool is_open() const
 	{
-		// The SAM control socket can remain open even when SESSION CREATE
-		// or NAMING LOOKUP NAME=ME failed. Only a resolved destination
-		// indicates a usable I2P session.
-		return m_sam_socket && m_sam_socket->is_open() && m_state != sam_connecting
-			&& !m_i2p_local_endpoint.empty();
+		return m_sam_socket
+			&& m_sam_socket->is_open()
+			&& m_state != sam_connecting;
 	}
 	template <typename Handler>
 	void open(std::string const& hostname, int port,
@@ -540,7 +538,6 @@ public:
 		if (m_hostname.empty()) return;
 
 		m_state = sam_connecting;
-		m_i2p_local_endpoint.clear();
 
 		char tmp[20];
 		aux::random_bytes(tmp);
