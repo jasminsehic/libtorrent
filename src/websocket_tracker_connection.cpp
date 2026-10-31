@@ -104,7 +104,14 @@ void websocket_tracker_connection::start()
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT [ url: %s ]", req.url.c_str());
+		{
+		bool const proxied = proxy.type != settings_pack::none && proxy.proxy_tracker_connections;
+		cb->debug_log("PRIVACY_TRACE WS_PROXY decision=%s type=%d tracker_proxy_enabled=%d "
+			"remote_dns_requested=%d scheme=%s"
+			, proxied ? "proxy" : "direct", int(proxy.type), int(proxy.proxy_tracker_connections)
+			, int(proxied && proxy.proxy_hostnames)
+			, req.url.compare(0, 6, "wss://") == 0 ? "wss" : "ws");
+	}
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
@@ -369,7 +376,7 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE [ size: %ld, data: %s ]", long(m_write_data.size()), m_write_data.c_str());
+		cb->debug_log("PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted", long(m_write_data.size()));
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
@@ -396,8 +403,8 @@ void websocket_tracker_connection::do_send(tracker_answer const& ans)
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE [ size: %ld, data: %s ]"
-				, long(m_write_data.size()), m_write_data.c_str());
+		cb->debug_log("PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted"
+				, long(m_write_data.size()));
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
@@ -438,6 +445,11 @@ void websocket_tracker_connection::on_timeout(error_code const& ec)
 void websocket_tracker_connection::on_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+		cb->debug_log("PRIVACY_TRACE WS_CONNECT result=%s error=%d"
+			, ec ? "failed" : "connected", ec.value());
+#endif
 	if (ec)
 	{
 		fail(ec, operation_t::connect);
@@ -471,9 +483,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	auto const& buf = m_read_buffer.data();
 
 #ifndef TORRENT_DISABLE_LOGGING
-	std::string str(static_cast<char const*>(buf.data()), buf.size());
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_READ [ size: %ld, data: %s ]", long(str.size()), str.c_str());
+		cb->debug_log("PRIVACY_TRACE WS_READ bytes=%ld payload=redacted", long(buf.size()));
 #endif
 
 	auto ret = parse_websocket_tracker_response({static_cast<char const*>(buf.data()), long(buf.size())}, ec);
