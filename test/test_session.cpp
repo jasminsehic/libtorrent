@@ -12,7 +12,11 @@ see LICENSE file.
 #include "libtorrent/session.hpp"
 #include "libtorrent/session_params.hpp"
 #include <atomic>
-#include <boost/asio.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read_until.hpp>
+#include <boost/asio/streambuf.hpp>
+#include <boost/asio/write.hpp>
 #include <chrono>
 #include <memory>
 #include <functional>
@@ -625,7 +629,7 @@ private:
 		void read()
 		{
 			auto self = shared_from_this();
-			boost::asio::async_read_until(socket, input, '\\n',
+			boost::asio::async_read_until(socket, input, '\n',
 				[self](error_code const& ec, std::size_t) {
 					if (ec) return;
 					std::istream stream(&self->input);
@@ -655,15 +659,15 @@ private:
 		void on_line(std::string const& line)
 		{
 			if (line.compare(0, 6, "HELLO ") == 0)
-				reply("HELLO REPLY RESULT=OK VERSION=3.1\\n");
+				reply("HELLO REPLY RESULT=OK VERSION=3.1\n");
 			else if (line.compare(0, 15, "SESSION CREATE ") == 0)
-				reply("SESSION STATUS RESULT=OK DESTINATION=TRANSIENT\\n");
+				reply("SESSION STATUS RESULT=OK DESTINATION=TRANSIENT\n");
 			else if (line.compare(0, 14, "NAMING LOOKUP ") == 0)
-				reply("NAMING REPLY RESULT=OK NAME=ME VALUE=testdestination\\n");
+				reply("NAMING REPLY RESULT=OK NAME=ME VALUE=testdestination\n");
 			else if (line.compare(0, 14, "STREAM ACCEPT ") == 0)
 			{
 				int const count = ++parent.m_accept_count;
-				reply("STREAM STATUS RESULT=OK\\n", count == 1);
+				reply("STREAM STATUS RESULT=OK\n", count == 1);
 			}
 		}
 
