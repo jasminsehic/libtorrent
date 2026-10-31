@@ -19,6 +19,7 @@ enum settings_tags_t {
 	SET_DHT_BOOTSTRAP_NODES, // char const*
 	SET_NATPMP_GATEWAY, // char const*
 	SET_WEBTORRENT_STUN_SERVER, // char const*
+	SET_WEBTORRENT_TURN_SERVERS, // char const*
 	SET_ALLOW_MULTIPLE_CONNECTIONS_PER_IP = 0x1200, // int (0 or 1)
 	SET_SEND_REDUNDANT_HAVE, // int (0 or 1)
 	SET_USE_DHT_AS_FALLBACK, // int (0 or 1)
@@ -84,6 +85,7 @@ enum settings_tags_t {
 	SET_DISK_DISABLE_COPY_ON_WRITE, // int (0 or 1)
 	SET_ALLOW_MULTIPLE_CONNECTIONS_PER_PID, // int (0 or 1)
 	SET_APPLY_FILTER_TO_DHT, // int (0 or 1)
+	SET_WEBTORRENT_RELAY_ONLY, // int (0 or 1)
 	SET_TRACKER_COMPLETION_TIMEOUT = 0x2200, // int
 	SET_TRACKER_RECEIVE_TIMEOUT, // int
 	SET_STOP_TRACKER_TIMEOUT, // int

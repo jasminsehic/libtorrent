@@ -3138,7 +3138,12 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 #if TORRENT_USE_I2P
 	bool torrent::i2p_compatible_tracker(aux::announce_entry const& ae) const
 	{
-		return ae.i2p || !is_i2p() || settings().get_bool(settings_pack::allow_i2p_mixed);
+		if (!is_i2p() || settings().get_bool(settings_pack::allow_i2p_mixed))
+			return true;
+
+		// WebRTC ICE does not use I2P, so strict I2P torrents cannot
+		// use WebSocket trackers, including those with .i2p hostnames.
+		return ae.i2p && ae.url.substr(0, 5) != "ws://" && ae.url.substr(0, 6) != "wss://";
 	}
 #endif
 
@@ -3146,7 +3151,22 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 	{
 #if TORRENT_USE_I2P
 		if (!i2p_compatible_tracker(ae))
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE I2P_TRACKER decision=block strict=1 ws=%d i2p_host=%d",
+					int(ae.url.substr(0, 5) == "ws://" || ae.url.substr(0, 6) == "wss://"),
+					int(ae.i2p));
+#endif
 			return false;
+		}
+#ifndef TORRENT_DISABLE_LOGGING
+		if (is_i2p() && should_log())
+			debug_log("PRIVACY_TRACE I2P_TRACKER decision=allow mixed=%d ws=%d i2p_host=%d",
+				int(settings().get_bool(settings_pack::allow_i2p_mixed)),
+				int(ae.url.substr(0, 5) == "ws://" || ae.url.substr(0, 6) == "wss://"),
+				int(ae.i2p));
+#endif
 #endif
 		return aux::is_tracker_protocol_supported(ae.url);
 	}
@@ -6566,9 +6586,27 @@ namespace {
 	}
 
 #if TORRENT_USE_RTC
+	bool torrent::rtc_allowed() const
+	{
+#if TORRENT_USE_I2P
+		if (is_i2p() && !settings().get_bool(settings_pack::allow_i2p_mixed))
+			return false;
+#endif
+		return true;
+	}
+
 	void torrent::generate_rtc_offers(int const count
 		, std::function<void(error_code const&, std::vector<aux::rtc_offer>)> handler)
 	{
+		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_OFFER decision=block strict_i2p=1");
+#endif
+			handler(boost::asio::error::operation_not_supported, {});
+			return;
+		}
 		// rtc_signaling is created lazily
 		if (!m_rtc_signaling)
 		{
@@ -6583,35 +6621,85 @@ namespace {
 
 	void torrent::on_rtc_offer(aux::rtc_offer const& offer)
 	{
+		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_REMOTE_SIGNAL decision=block strict_i2p=1");
+#endif
+			return;
+		}
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_offer(offer);
 	}
 
 	void torrent::on_rtc_answer(aux::rtc_answer const& answer)
 	{
+		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_REMOTE_SIGNAL decision=block strict_i2p=1");
+#endif
+			return;
+		}
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_answer(answer);
 	}
 
 	void torrent::on_rtc_stream(aux::rtc_stream_init stream_init)
 	{
+		// A policy change may race with a completed ICE negotiation.
+		// Never admit a new WebRTC peer after direct ICE is disallowed.
+		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_TRANSFER decision=block strict_i2p=1");
+#endif
+			return;
+		}
+#ifndef TORRENT_DISABLE_LOGGING
+		if (should_log())
+			debug_log(
+				"PRIVACY_TRACE RTC_TRANSFER event=data_channel_open relay_only=%d mixed_i2p=%d",
+				int(settings().get_bool(settings_pack::webtorrent_relay_only)),
+				int(settings().get_bool(settings_pack::allow_i2p_mixed)));
+#endif
 		aux::socket_type s(aux::rtc_stream(m_ses.get_context(), stream_init));
 
 		error_code ec;
 		auto endpoint = s.remote_endpoint(ec);
-		if(ec)
+		if (ec)
 		{
-			// This can happen if the peer immediately disconnects
+			// This can happen if the peer immediately disconnects.
 #ifndef TORRENT_DISABLE_LOGGING
-			debug_log("failed to get RTC stream remote endpoint: %s", ec.message().c_str());
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=0 "
+						  "reason=remote_endpoint_error code=%d",
+					ec.value());
 #endif
 			return;
 		}
 
 		need_peer_list();
 		torrent_state st = get_peer_list_state();
-		if(torrent_peer* peerinfo = m_peer_list->add_rtc_peer(endpoint, peer_source_flags_t{}, {}, &st))
+		if (torrent_peer* peerinfo =
+				m_peer_list->add_rtc_peer(endpoint, peer_source_flags_t{}, {}, &st))
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=1");
+#endif
 			create_peer_connection(peerinfo, std::move(s), std::move(endpoint));
+		}
+		else
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=0 reason=peer_list_rejected");
+#endif
+		}
 	}
 #endif
 

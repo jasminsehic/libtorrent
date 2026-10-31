@@ -18,6 +18,8 @@ repos:
     rev: v6.0.0
     hooks:
     -   id: trailing-whitespace
+        # Unified diffs require a leading space on blank context lines.
+        exclude: ^deps/patch-libdatachannel-32bit-builds\.patch$
     #-   id: end-of-file-fixer
     -   id: check-yaml
     -   id: check-case-conflict
