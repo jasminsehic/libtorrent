@@ -350,6 +350,9 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 
 	rtc::Configuration config;
 	bool const relay_only = m_torrent->settings().get_bool(settings_pack::webtorrent_relay_only);
+	int accepted_stun = 0;
+	int accepted_turn = 0;
+	int rejected_servers = 0;
 
 	// The legacy STUN setting also accepts multiple newline-delimited servers.
 	// Only TURN URLs are used in relay-only mode, regardless of STUN settings.
@@ -372,10 +375,16 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 			{
 				rtc::IceServer server(url);
 				if (server.type == expected_type)
+				{
+					if (expected_type == rtc::IceServer::Type::Turn) ++accepted_turn;
+					else ++accepted_stun;
 					config.iceServers.emplace_back(std::move(server));
+				}
+				else ++rejected_servers;
 			}
 			catch (std::exception const&)
 			{
+				++rejected_servers;
 				// A malformed ICE server must not prevent other servers from
 				// being used. Do not log the URL: it may contain TURN secrets.
 			}
@@ -401,8 +410,25 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 			, config.iceServers.end());
 	}
 
+#ifndef TORRENT_DISABLE_LOGGING
+	debug_log("PRIVACY_TRACE ICE_CONFIG relay_only=%d stun=%d turn=%d rejected=%d policy=%s"
+		, int(relay_only), accepted_stun, accepted_turn, rejected_servers
+		, config.iceTransportPolicy == rtc::TransportPolicy::Relay ? "relay" : "all");
+	if (relay_only && config.iceServers.empty())
+		debug_log("PRIVACY_TRACE ICE_NO_TURN fail_closed=1");
+#endif
 	auto pc = std::make_shared<rtc::PeerConnection>(config);
-	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler]
+	pc->onLocalCandidate([weak_this = weak_from_this(), relay_only](rtc::Candidate candidate) {
+		if (auto self = weak_this.lock())
+			post(self->m_io_context, [self, relay_only, type = candidate.type()] {
+#ifndef TORRENT_DISABLE_LOGGING
+				self->debug_log("PRIVACY_TRACE ICE_LOCAL_CANDIDATE type=%d relay_only=%d violation=%d"
+					, int(type), int(relay_only)
+					, int(relay_only && type != rtc::Candidate::Type::Relayed));
+#endif
+			});
+	});
+	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler, relay_only]
 		(rtc::PeerConnection::State state)
 	{
 		// Warning: this is called from another thread
@@ -410,6 +436,25 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 		auto pc_ = weak_pc.lock();
 		if (!self || !pc_) return;
 
+		post(self->m_io_context, [self, weak_pc, state, relay_only] {
+			auto connected_pc = weak_pc.lock();
+			if (!connected_pc) return;
+#ifndef TORRENT_DISABLE_LOGGING
+			self->debug_log("PRIVACY_TRACE RTC_STATE state=%d relay_only=%d"
+				, int(state), int(relay_only));
+			if (state == rtc::PeerConnection::State::Connected)
+			{
+				rtc::Candidate local;
+				rtc::Candidate remote;
+				bool const found = connected_pc->getSelectedCandidatePair(&local, &remote);
+				bool const relayed = found && local.type() == rtc::Candidate::Type::Relayed;
+				self->debug_log("PRIVACY_TRACE ICE_SELECTED_PAIR found=%d local_type=%d remote_type=%d relay_only=%d violation=%d"
+					, int(found), found ? int(local.type()) : -1
+					, found ? int(remote.type()) : -1, int(relay_only)
+					, int(relay_only && found && !relayed));
+			}
+#endif
+		});
 		if (state == rtc::PeerConnection::State::Failed)
 		{
 			error_code const ec = boost::asio::error::connection_refused;
