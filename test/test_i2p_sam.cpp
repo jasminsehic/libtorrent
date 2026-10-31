@@ -136,9 +136,11 @@ private:
 	std::atomic<int> m_accept_count{0};
 };
 }
+#endif // TORRENT_USE_I2P
 
 TORRENT_TEST(i2p_acceptor_recovers_after_eof)
 {
+#if TORRENT_USE_I2P
 	mock_sam_accept_bridge bridge;
 	settings_pack p = settings();
 	p.set_bool(settings_pack::enable_dht, false);
@@ -151,5 +153,5 @@ TORRENT_TEST(i2p_acceptor_recovers_after_eof)
 	for (int i = 0; i < 200 && bridge.accept_count() < 2; ++i)
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	TEST_CHECK(bridge.accept_count() >= 2);
+#endif
 }
-#endif // TORRENT_USE_I2P
