@@ -46,6 +46,7 @@ see LICENSE file.
 #include <cctype>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <limits> // for numeric_limits
 #include <cstdio> // for snprintf
 #include <functional>
