@@ -14,8 +14,6 @@ see LICENSE file.
 #include <atomic>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/read_until.hpp>
-#include <boost/asio/streambuf.hpp>
 #include <boost/asio/write.hpp>
 #include <chrono>
 #include <memory>
@@ -629,13 +627,20 @@ private:
 		void read()
 		{
 			auto self = shared_from_this();
-			boost::asio::async_read_until(socket, input, '\n',
-				[self](error_code const& ec, std::size_t) {
-					if (ec) return;
-					std::istream stream(&self->input);
-					std::string line;
-					std::getline(stream, line);
-					self->on_line(line);
+			socket.async_read_some(boost::asio::buffer(&next_char, 1)
+				, [self](error_code const& ec, std::size_t n) {
+					if (ec || n != 1) return;
+					if (self->next_char == '\n')
+					{
+						std::string line = std::move(self->input);
+						self->input.clear();
+						self->on_line(line);
+					}
+					else if (self->input.size() < 4096)
+					{
+						self->input.push_back(self->next_char);
+						self->read();
+					}
 				});
 		}
 
@@ -672,7 +677,8 @@ private:
 		}
 
 		tcp::socket socket;
-		boost::asio::streambuf input;
+		std::string input;
+		char next_char = 0;
 		mock_sam_accept_bridge& parent;
 	};
 
