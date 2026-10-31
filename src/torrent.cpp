@@ -3151,7 +3151,22 @@ aux::vector<download_priority_t, piece_index_t> file_to_piece_prio(
 	{
 #if TORRENT_USE_I2P
 		if (!i2p_compatible_tracker(ae))
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				debug_log("PRIVACY_TRACE I2P_TRACKER decision=block strict=1 ws=%d i2p_host=%d"
+					, int(ae.url.substr(0, 5) == "ws://" || ae.url.substr(0, 6) == "wss://")
+					, int(ae.i2p));
+#endif
 			return false;
+		}
+#ifndef TORRENT_DISABLE_LOGGING
+		if (is_i2p() && should_log())
+			debug_log("PRIVACY_TRACE I2P_TRACKER decision=allow mixed=%d ws=%d i2p_host=%d"
+				, int(settings().get_bool(settings_pack::allow_i2p_mixed))
+				, int(ae.url.substr(0, 5) == "ws://" || ae.url.substr(0, 6) == "wss://")
+				, int(ae.i2p));
+#endif
 #endif
 		return aux::is_tracker_protocol_supported(ae.url);
 	}
@@ -6585,6 +6600,9 @@ namespace {
 	{
 		if (!rtc_allowed())
 		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log()) debug_log("PRIVACY_TRACE RTC_OFFER decision=block strict_i2p=1");
+#endif
 			handler(boost::asio::error::operation_not_supported, {});
 			return;
 		}
@@ -6603,7 +6621,12 @@ namespace {
 	void torrent::on_rtc_offer(aux::rtc_offer const& offer)
 	{
 		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log()) debug_log("PRIVACY_TRACE RTC_REMOTE_SIGNAL decision=block strict_i2p=1");
+#endif
 			return;
+		}
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_offer(offer);
 	}
@@ -6611,7 +6634,12 @@ namespace {
 	void torrent::on_rtc_answer(aux::rtc_answer const& answer)
 	{
 		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log()) debug_log("PRIVACY_TRACE RTC_REMOTE_SIGNAL decision=block strict_i2p=1");
+#endif
 			return;
+		}
 		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_answer(answer);
 	}
@@ -6621,7 +6649,18 @@ namespace {
 		// A policy change may race with a completed ICE negotiation.
 		// Never admit a new WebRTC peer after direct ICE is disallowed.
 		if (!rtc_allowed())
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log()) debug_log("PRIVACY_TRACE RTC_TRANSFER decision=block strict_i2p=1");
+#endif
 			return;
+		}
+#ifndef TORRENT_DISABLE_LOGGING
+		if (should_log())
+			debug_log("PRIVACY_TRACE RTC_TRANSFER event=data_channel_open relay_only=%d mixed_i2p=%d"
+				, int(settings().get_bool(settings_pack::webtorrent_relay_only))
+				, int(settings().get_bool(settings_pack::allow_i2p_mixed)));
+#endif
 		aux::socket_type s(aux::rtc_stream(m_ses.get_context(), stream_init));
 
 		error_code ec;
