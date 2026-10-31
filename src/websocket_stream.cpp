@@ -143,26 +143,26 @@ void websocket_stream::abort()
 void websocket_stream::terminate_socket()
 {
 	// polymorphic_socket closes the active TCP, proxy or TLS transport.
-	if (!m_stream) return;
+	if (!m_stream)
+		return;
 	error_code ec;
 	m_stream->next_layer().close(ec);
 }
 
 void websocket_stream::set_control_callback()
 {
-	if (!m_stream) return;
+	if (!m_stream)
+		return;
 	auto const weak_self = std::weak_ptr<websocket_stream>(shared_from_this());
-	m_stream->control_callback(
-		[weak_self](websocket::frame_type const kind, auto const&) {
-			if (kind != websocket::frame_type::pong) return;
-			if (auto self = weak_self.lock()) self->on_pong();
-		});
+	m_stream->control_callback([weak_self](websocket::frame_type const kind, auto const&) {
+		if (kind != websocket::frame_type::pong)
+			return;
+		if (auto self = weak_self.lock())
+			self->on_pong();
+	});
 }
 
-void websocket_stream::on_pong()
-{
-	m_awaiting_pong = false;
-}
+void websocket_stream::on_pong() { m_awaiting_pong = false; }
 
 close_reason_t websocket_stream::get_close_reason()
 {
@@ -428,7 +428,8 @@ void websocket_stream::on_read(error_code ec, std::size_t bytes_read, read_handl
 	COMPLETE_ASYNC("websocket_stream::on_read");
 
 	if (ec) m_open = false;
-	else m_awaiting_pong = false;
+	else
+		m_awaiting_pong = false;
 
 	post(m_io_service, std::bind(std::move(handler), ec, bytes_read));
 }

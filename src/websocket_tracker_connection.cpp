@@ -107,11 +107,20 @@ void websocket_tracker_connection::start()
 	{
 		bool const proxied = proxy.type != settings_pack::none && proxy.proxy_tracker_connections;
 		cb->debug_log("PRIVACY_TRACE WS_PROXY decision=%s type=%d tracker_proxy_enabled=%d "
-			"remote_dns_requested=%d scheme=%s"
-			, proxied ? "proxy" : "direct", int(proxy.type), int(proxy.proxy_tracker_connections)
-			, int(proxied && proxy.proxy_hostnames)
-			, req.url.compare(0, 6, "wss://") == 0 ? "wss" : "ws");
+					  "remote_dns_requested=%d scheme=%s",
+			proxied ? "proxy" : "direct",
+			int(proxy.type),
+			int(proxy.proxy_tracker_connections),
+			int(proxied && proxy.proxy_hostnames),
+			req.url.compare(0, 6, "wss://") == 0 ? "wss" : "ws");
 	}
+#endif
+
+#ifndef TORRENT_DISABLE_LOGGING
+	// Count actual async_connect calls, not a previous debug message that no
+	// longer exists. This also supports the stale-answer reconnect regression.
+	if (auto cb = requester())
+		cb->debug_log("PRIVACY_TRACE WS_CONNECT_ATTEMPT");
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
@@ -235,7 +244,8 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
-	if (!is_open()) return;
+	if (!is_open())
+		return;
 
 	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
 	send_pending();
@@ -376,7 +386,8 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted", long(m_write_data.size()));
+		cb->debug_log(
+			"PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted", long(m_write_data.size()));
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
@@ -403,8 +414,8 @@ void websocket_tracker_connection::do_send(tracker_answer const& ans)
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted"
-				, long(m_write_data.size()));
+		cb->debug_log(
+			"PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted", long(m_write_data.size()));
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
@@ -447,8 +458,8 @@ void websocket_tracker_connection::on_connect(error_code const& ec)
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("PRIVACY_TRACE WS_CONNECT result=%s error=%d"
-			, ec ? "failed" : "connected", ec.value());
+		cb->debug_log(
+			"PRIVACY_TRACE WS_CONNECT result=%s error=%d", ec ? "failed" : "connected", ec.value());
 #endif
 	if (ec)
 	{
@@ -567,10 +578,11 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 			// Don't retain or reopen a connection that has been replaced.
 			response.offer->answer_callback =
 				[hash = info_hash,
-					weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())]
-				(peer_id const& local_pid, aux::rtc_answer const& answer) {
+					weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())](
+					peer_id const& local_pid, aux::rtc_answer const& answer) {
 					auto self = weak_self.lock();
-					if (!self) return;
+					if (!self)
+						return;
 					self->queue_answer({hash, local_pid, answer});
 				};
 

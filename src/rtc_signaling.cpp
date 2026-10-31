@@ -78,16 +78,20 @@ public:
 
 		(void)level;
 		std::string event(message.begin(), message.end());
-		std::transform(event.begin(), event.end(), event.begin(),
-			[](unsigned char c) { return char(std::tolower(c)); });
+		std::transform(event.begin(), event.end(), event.begin(), [](unsigned char c) {
+			return char(std::tolower(c));
+		});
 		char const* protocol = nullptr;
-		if (event.find("stun") != std::string::npos) protocol = "stun";
-		else if (event.find("turn") != std::string::npos) protocol = "turn";
-		else if (event.find("ice") != std::string::npos) protocol = "ice";
-		if (!protocol) return;
+		if (event.find("stun") != std::string::npos)
+			protocol = "stun";
+		else if (event.find("turn") != std::string::npos)
+			protocol = "turn";
+		else if (event.find("ice") != std::string::npos)
+			protocol = "ice";
+		if (!protocol)
+			return;
 		char const* direction = "event";
-		if (event.find("sending") != std::string::npos
-			|| event.find("sent") != std::string::npos
+		if (event.find("sending") != std::string::npos || event.find("sent") != std::string::npos
 			|| event.find("send") != std::string::npos)
 			direction = "send";
 		else if (event.find("receiving") != std::string::npos
@@ -97,8 +101,8 @@ public:
 		// Only report event classes. Raw library messages can contain
 		// candidate IPs, TURN authentication fields, or sensitive SDP.
 		char const* const label = protocol;
-		std::string const safe = std::string("PRIVACY_TRACE RTC_STACK_HINT protocol=")
-			+ label + " direction=" + direction + " raw=redacted";
+		std::string const safe = std::string("PRIVACY_TRACE RTC_STACK_HINT protocol=") + label
+			+ " direction=" + direction + " raw=redacted";
 		alerts.emplace_alert<log_alert>(safe.c_str());
 	}
 
@@ -130,8 +134,8 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 	appender.set_session(&m_torrent->session());
 	std::call_once(flag, []() {
 		using namespace std::placeholders;
-		rtc::InitLogger(rtc::LogLevel::Debug
-			, std::bind(&rtc_log_appender::write, &appender, _1, _2));
+		rtc::InitLogger(
+			rtc::LogLevel::Debug, std::bind(&rtc_log_appender::write, &appender, _1, _2));
 	});
 #else
 	std::call_once(flag, []() {
@@ -376,31 +380,33 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 
 	// The legacy STUN setting also accepts multiple newline-delimited servers.
 	// Only TURN URLs are used in relay-only mode, regardless of STUN settings.
-	auto append_servers = [&](std::string const& servers, rtc::IceServer::Type const expected_type)
-	{
+	auto append_servers = [&](std::string const& servers,
+							  rtc::IceServer::Type const expected_type) {
 		std::istringstream input(servers);
 		std::string url;
 		while (std::getline(input, url))
 		{
 			auto const first = url.find_first_not_of(" \t\r");
-			if (first == std::string::npos) continue;
+			if (first == std::string::npos)
+				continue;
 			auto const last = url.find_last_not_of(" \t\r");
 			url = url.substr(first, last - first + 1);
-			if (expected_type == rtc::IceServer::Type::Stun
-				&& url.find(':') != std::string::npos
-				&& url.compare(0, 5, "stun:") != 0
-				&& url.compare(0, 6, "stuns:") != 0)
+			if (expected_type == rtc::IceServer::Type::Stun && url.find(':') != std::string::npos
+				&& url.compare(0, 5, "stun:") != 0 && url.compare(0, 6, "stuns:") != 0)
 				url.insert(0, "stun:");
 			try
 			{
 				rtc::IceServer server(url);
 				if (server.type == expected_type)
 				{
-					if (expected_type == rtc::IceServer::Type::Turn) ++accepted_turn;
-					else ++accepted_stun;
+					if (expected_type == rtc::IceServer::Type::Turn)
+						++accepted_turn;
+					else
+						++accepted_stun;
 					config.iceServers.emplace_back(std::move(server));
 				}
-				else ++rejected_servers;
+				else
+					++rejected_servers;
 			}
 			catch (std::exception const&)
 			{
@@ -412,10 +418,10 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	};
 
 	if (!relay_only)
-		append_servers(m_torrent->settings().get_str(settings_pack::webtorrent_stun_server)
-			, rtc::IceServer::Type::Stun);
-	append_servers(m_torrent->settings().get_str(settings_pack::webtorrent_turn_servers)
-		, rtc::IceServer::Type::Turn);
+		append_servers(m_torrent->settings().get_str(settings_pack::webtorrent_stun_server),
+			rtc::IceServer::Type::Stun);
+	append_servers(m_torrent->settings().get_str(settings_pack::webtorrent_turn_servers),
+		rtc::IceServer::Type::Turn);
 
 	if (relay_only)
 		config.iceTransportPolicy = rtc::TransportPolicy::Relay;
@@ -425,15 +431,20 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	{
 		// Enforce the policy even if a configuration hook modifies ICE servers.
 		config.iceTransportPolicy = rtc::TransportPolicy::Relay;
-		config.iceServers.erase(std::remove_if(config.iceServers.begin(), config.iceServers.end()
-			, [](rtc::IceServer const& s) { return s.type != rtc::IceServer::Type::Turn; })
-			, config.iceServers.end());
+		config.iceServers.erase(
+			std::remove_if(config.iceServers.begin(),
+				config.iceServers.end(),
+				[](rtc::IceServer const& s) { return s.type != rtc::IceServer::Type::Turn; }),
+			config.iceServers.end());
 	}
 
 #ifndef TORRENT_DISABLE_LOGGING
-	debug_log("PRIVACY_TRACE ICE_CONFIG relay_only=%d stun=%d turn=%d rejected=%d policy=%s"
-		, int(relay_only), accepted_stun, accepted_turn, rejected_servers
-		, config.iceTransportPolicy == rtc::TransportPolicy::Relay ? "relay" : "all");
+	debug_log("PRIVACY_TRACE ICE_CONFIG relay_only=%d stun=%d turn=%d rejected=%d policy=%s",
+		int(relay_only),
+		accepted_stun,
+		accepted_turn,
+		rejected_servers,
+		config.iceTransportPolicy == rtc::TransportPolicy::Relay ? "relay" : "all");
 	if (relay_only && config.iceServers.empty())
 		debug_log("PRIVACY_TRACE ICE_NO_TURN fail_closed=1");
 #else
@@ -446,39 +457,47 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	pc->onLocalCandidate([weak_this = weak_from_this(), relay_only](rtc::Candidate candidate) {
 		if (auto self = weak_this.lock())
 			post(self->m_io_context, [self, relay_only, type = candidate.type()] {
-#ifndef TORRENT_DISABLE_LOGGING
-				self->debug_log("PRIVACY_TRACE ICE_LOCAL_CANDIDATE type=%d relay_only=%d violation=%d"
-					, int(type), int(relay_only)
-					, int(relay_only && type != rtc::Candidate::Type::Relayed));
-#endif
+				self->debug_log(
+					"PRIVACY_TRACE ICE_LOCAL_CANDIDATE type=%d relay_only=%d violation=%d",
+					int(type),
+					int(relay_only),
+					int(relay_only && type != rtc::Candidate::Type::Relayed));
 			});
 	});
 #endif
-	pc->onStateChange([weak_this = weak_from_this(), weak_pc = make_weak_ptr(pc), offer_id, handler, relay_only]
-		(rtc::PeerConnection::State state)
-	{
+	pc->onStateChange([weak_this = weak_from_this(),
+						  weak_pc = make_weak_ptr(pc),
+						  offer_id,
+						  handler,
+						  relay_only](rtc::PeerConnection::State state) {
 		// Warning: this is called from another thread
 		auto self = weak_this.lock();
 		auto pc_ = weak_pc.lock();
-		if (!self || !pc_) return;
+		if (!self || !pc_)
+			return;
 
 		post(self->m_io_context, [self, weak_pc, state, relay_only] {
 			(void)relay_only;
+			(void)state;
 			auto connected_pc = weak_pc.lock();
-			if (!connected_pc) return;
+			if (!connected_pc)
+				return;
 #ifndef TORRENT_DISABLE_LOGGING
-			self->debug_log("PRIVACY_TRACE RTC_STATE state=%d relay_only=%d"
-				, int(state), int(relay_only));
+			self->debug_log(
+				"PRIVACY_TRACE RTC_STATE state=%d relay_only=%d", int(state), int(relay_only));
 			if (state == rtc::PeerConnection::State::Connected)
 			{
 				rtc::Candidate local;
 				rtc::Candidate remote;
 				bool const found = connected_pc->getSelectedCandidatePair(&local, &remote);
 				bool const relayed = found && local.type() == rtc::Candidate::Type::Relayed;
-				self->debug_log("PRIVACY_TRACE ICE_SELECTED_PAIR found=%d local_type=%d remote_type=%d relay_only=%d violation=%d"
-					, int(found), found ? int(local.type()) : -1
-					, found ? int(remote.type()) : -1, int(relay_only)
-					, int(relay_only && found && !relayed));
+				self->debug_log("PRIVACY_TRACE ICE_SELECTED_PAIR found=%d local_type=%d "
+								"remote_type=%d relay_only=%d violation=%d",
+					int(found),
+					found ? int(local.type()) : -1,
+					found ? int(remote.type()) : -1,
+					int(relay_only),
+					int(relay_only && found && !relayed));
 			}
 #endif
 		});

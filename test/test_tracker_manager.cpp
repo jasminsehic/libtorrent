@@ -222,6 +222,7 @@ TORRENT_TEST(websocket_tracker_late_answer_does_not_reconnect)
 	struct deferred_answer_callback : ws_request_callback
 	{
 		std::function<void(peer_id const&, aux::rtc_answer const&)> answer_callback;
+		// Count genuine async_connect calls in websocket_tracker_connection::start().
 		mutable int connect_attempts = 0;
 
 		void on_rtc_offer(aux::rtc_offer const& offer) override
@@ -232,7 +233,7 @@ TORRENT_TEST(websocket_tracker_late_answer_does_not_reconnect)
 #ifndef TORRENT_DISABLE_LOGGING
 		void debug_log(char const* fmt, ...) const noexcept override TORRENT_FORMAT(2, 3)
 		{
-			if (std::strstr(fmt, "WEBSOCKET_TRACKER_CONNECT [") != nullptr)
+			if (std::strstr(fmt, "PRIVACY_TRACE WS_CONNECT_ATTEMPT") != nullptr)
 				++connect_attempts;
 		}
 #endif

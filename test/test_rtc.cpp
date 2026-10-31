@@ -107,29 +107,32 @@ void run_test() {
 void test_webtorrent_ice_server_configuration()
 {
 	session_mock ses(io_context);
-	ses.mutable_settings().set_str(settings_pack::webtorrent_stun_server,
-		"stun:stun1.example:3478\nstun:stun2.example:3478");
+	ses.mutable_settings().set_str(
+		settings_pack::webtorrent_stun_server, "stun:stun1.example:3478\nstun:stun2.example:3478");
 	ses.mutable_settings().set_str(settings_pack::webtorrent_turn_servers,
 		"turn://alice:secret@turn1.example:3478?transport=udp\n"
 		"turns://bob:pass@turn2.example:5349");
-	aux::torrent tor(ses, false,
+	aux::torrent tor(ses,
+		false,
 		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
 	int observed = 0;
-	auto make_signaling = [&](bool const relay_only)
-	{
+	auto make_signaling = [&](bool const relay_only) {
 		ses.mutable_settings().set_bool(settings_pack::webtorrent_relay_only, relay_only);
-		return std::make_shared<rtc_signaling>(io_context, &tor, [](rtc_stream_init) {},
-			[&, relay_only](rtc::Configuration& config, rtc_signaling::description_handler const&)
-			{
+		return std::make_shared<rtc_signaling>(
+			io_context,
+			&tor,
+			[](rtc_stream_init) {},
+			[&, relay_only](rtc::Configuration& config, rtc_signaling::description_handler const&) {
 				++observed;
-				TEST_CHECK(config.iceTransportPolicy == (relay_only
-					? rtc::TransportPolicy::Relay : rtc::TransportPolicy::All));
+				TEST_CHECK(config.iceTransportPolicy
+					== (relay_only ? rtc::TransportPolicy::Relay : rtc::TransportPolicy::All));
 				TEST_EQUAL(config.iceServers.size(), relay_only ? 2u : 4u);
 				int stun = 0;
 				int turn = 0;
 				for (auto const& server : config.iceServers)
 				{
-					if (server.type == rtc::IceServer::Type::Stun) ++stun;
+					if (server.type == rtc::IceServer::Type::Stun)
+						++stun;
 					if (server.type == rtc::IceServer::Type::Turn)
 					{
 						++turn;

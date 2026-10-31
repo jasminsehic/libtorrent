@@ -1097,10 +1097,10 @@ TORRENT_TEST(websocket_tracker_pongs_keep_delayed_announce_alive)
 TORRENT_TEST(websocket_tracker_privacy_no_stun)
 {
 	auto check_stun = [](char const* path,
-		std::string const& tracker,
-		bool const i2p_torrent,
-		settings_pack pack,
-		bool const expect_stun = false) {
+						  std::string const& tracker,
+						  bool const i2p_torrent,
+						  settings_pack pack,
+						  bool const expect_stun = false) {
 		io_context ios;
 		udp::socket stun_listener(ios, udp::endpoint(boost::asio::ip::address_v4::loopback(), 0));
 		pack.set_str(settings_pack::webtorrent_stun_server,
