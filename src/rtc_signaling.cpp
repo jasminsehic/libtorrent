@@ -81,6 +81,22 @@ public:
 
 		(void)level;
 		std::string event(message.begin(), message.end());
+		// Forward only our narrowly-defined UDP endpoint trace. Other library
+		// messages may contain SDP, ICE secrets or TURN credentials.
+		auto const trace_start = event.find("PRIVACY_TRACE RTC_UDP_SELECTED ");
+		if (trace_start != std::string::npos)
+		{
+			std::string const trace = event.substr(trace_start);
+			bool const safe = trace.size() < 512
+				&& std::all_of(trace.begin(), trace.end(), [](unsigned char c) {
+					return std::isalnum(c) || c == ' ' || c == '=' || c == ':'
+						|| c == '.' || c == '_' || c == '-' || c == '['
+						|| c == ']' || c == '%';
+				});
+			if (safe)
+				alerts.emplace_alert<log_alert>(trace.c_str());
+			return;
+		}
 		std::transform(event.begin(), event.end(), event.begin(), [](unsigned char c) {
 			return char(std::tolower(c));
 		});
