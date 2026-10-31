@@ -629,9 +629,10 @@ private:
 		void read()
 		{
 			auto self = shared_from_this();
-			socket.async_read_some(boost::asio::buffer(&next_char, 1)
-				, [self](error_code const& ec, std::size_t n) {
-					if (ec || n != 1) return;
+			socket.async_read_some(
+				boost::asio::buffer(&next_char, 1), [self](error_code const& ec, std::size_t n) {
+					if (ec || n != 1)
+						return;
 					if (self->next_char == '\n')
 					{
 						std::string line = std::move(self->input);
