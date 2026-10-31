@@ -116,6 +116,12 @@ see LICENSE file.
 
 #include "libtorrent/aux_/torrent_impl.hpp"
 
+#if TORRENT_USE_RTC
+#include "libtorrent/aux_/disable_warnings_push.hpp"
+#include <rtc/rtc.hpp>
+#include "libtorrent/aux_/disable_warnings_pop.hpp"
+#endif
+
 using namespace std::placeholders;
 
 namespace libtorrent::aux {
@@ -6682,6 +6688,28 @@ namespace {
 			return;
 		}
 
+#ifndef TORRENT_DISABLE_LOGGING
+		if (should_log())
+		{
+			rtc::Candidate local_candidate;
+			rtc::Candidate remote_candidate;
+			bool const selected = stream_init.peer_connection->getSelectedCandidatePair(
+				&local_candidate, &remote_candidate);
+			auto const selected_local_address = selected ? local_candidate.address() : std::nullopt;
+			auto const selected_remote_address = selected ? remote_candidate.address() : std::nullopt;
+			debug_log("PRIVACY_TRACE RTC_PEER_ADDRESS displayed=%s selected=%d "
+					  "selected_local=%s:%d selected_remote=%s:%d "
+					  "local_type=%d remote_type=%d",
+				print_endpoint(endpoint).c_str(),
+				int(selected),
+				selected_local_address ? selected_local_address->c_str() : "unknown",
+				selected ? int(local_candidate.port().value_or(0)) : 0,
+				selected_remote_address ? selected_remote_address->c_str() : "unknown",
+				selected ? int(remote_candidate.port().value_or(0)) : 0,
+				selected ? int(local_candidate.type()) : -1,
+				selected ? int(remote_candidate.type()) : -1);
+		}
+#endif
 		need_peer_list();
 		torrent_state st = get_peer_list_state();
 		if (torrent_peer* peerinfo =
