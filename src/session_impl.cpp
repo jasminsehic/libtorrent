@@ -507,6 +507,7 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 #if TORRENT_USE_I2P
 		, m_i2p_conn(m_io_context)
 		, m_i2p_reconnect_timer(m_io_context)
+		, m_i2p_accept_retry_timer(m_io_context)
 #endif
 		, m_created(clock_type::now())
 		, m_last_tick(m_created)
@@ -1041,6 +1042,7 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 
 #if TORRENT_USE_I2P
 		m_i2p_reconnect_timer.cancel();
+		m_i2p_accept_retry_timer.cancel();
 		m_i2p_conn.close(ec);
 #endif
 		stop_ip_notifier();
@@ -2428,14 +2430,19 @@ retry:
 		// pause the session now and resume it once we've
 		// established the i2p SAM connection
 #if TORRENT_USE_I2P
-		// Cancel any pending reconnection timer
+		// A changed I2P configuration invalidates any pending retries.
 		m_i2p_reconnect_timer.cancel();
 		m_i2p_reconnecting = false;
 		m_i2p_reconnect_delay = initial_reconnect_delay;
+		m_i2p_accept_retry_timer.cancel();
+		m_i2p_accept_retry_pending = false;
+		m_i2p_accept_retry_delay = initial_reconnect_delay;
 
 		if (m_settings.get_str(settings_pack::i2p_hostname).empty())
 		{
 			error_code ec;
+			if (m_i2p_listen_socket)
+				m_i2p_listen_socket->close(ec);
 			m_i2p_conn.close(ec);
 			return;
 		}
@@ -2522,7 +2529,14 @@ retry:
 	void session_impl::on_i2p_accept(error_code const& e)
 	{
 		COMPLETE_ASYNC("session_impl::on_i2p_accept");
-		if (e == boost::asio::error::operation_aborted) return;
+		if (e == boost::asio::error::operation_aborted)
+		{
+			// A configuration change may cancel an outstanding STREAM ACCEPT.
+			// Do not destroy its stream from inside the stream's own callback.
+			if (!m_abort)
+				schedule_i2p_accept_retry();
+			return;
+		}
 		if (e)
 		{
 			if (m_alerts.should_post<listen_failed_alert>())
@@ -2535,11 +2549,53 @@ retry:
 			if (should_log())
 				session_log("i2p SAM connection failure: %s", e.message().c_str());
 #endif
+			schedule_i2p_accept_retry();
 			return;
 		}
+		m_i2p_accept_retry_delay = initial_reconnect_delay;
 		incoming_connection(std::move(*m_i2p_listen_socket));
 		m_i2p_listen_socket.reset();
 		open_new_incoming_i2p_connection();
+	}
+
+	void session_impl::schedule_i2p_accept_retry()
+	{
+		if (m_abort || m_settings.get_str(settings_pack::i2p_hostname).empty()
+			|| m_i2p_accept_retry_pending)
+			return;
+
+		m_i2p_accept_retry_pending = true;
+#ifndef TORRENT_DISABLE_LOGGING
+		if (should_log())
+			session_log("retrying i2p SAM acceptor in %d seconds"
+				, m_i2p_accept_retry_delay.count());
+#endif
+		m_i2p_accept_retry_timer.expires_after(m_i2p_accept_retry_delay);
+		std::weak_ptr<session_impl> self = shared_from_this();
+		m_i2p_accept_retry_timer.async_wait([self](error_code const& ec) {
+			if (auto sp = self.lock())
+				sp->on_i2p_accept_retry(ec);
+		});
+		m_i2p_accept_retry_delay *= 2;
+		if (m_i2p_accept_retry_delay > max_reconnect_delay)
+			m_i2p_accept_retry_delay = max_reconnect_delay;
+	}
+
+	void session_impl::on_i2p_accept_retry(error_code const& ec)
+	{
+		if (ec == boost::asio::error::operation_aborted || m_abort)
+			return;
+		m_i2p_accept_retry_pending = false;
+		if (m_settings.get_str(settings_pack::i2p_hostname).empty())
+			return;
+
+		// The failed stream's handler has returned by now. It is safe to
+		// destroy the old acceptor, unlike inside on_i2p_accept().
+		m_i2p_listen_socket.reset();
+		if (m_i2p_conn.is_open())
+			open_new_incoming_i2p_connection();
+		else
+			schedule_i2p_reconnect();
 	}
 
 	void session_impl::schedule_i2p_reconnect()
