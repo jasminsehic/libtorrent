@@ -55,17 +55,20 @@ public:
 	// is held for its whole body (not just the m_ses read) so unset_session()
 	// can't clear the pointer out from under an in-flight write(), which
 	// would otherwise race with the session being destroyed right after
-	void set_session(aux::session_interface* ses)
+	void set_session(rtc_signaling* owner, aux::session_interface* ses)
 	{
 		std::lock_guard<std::mutex> l(m_mutex);
+		m_owner = owner;
 		m_ses = ses;
 	}
 
-	void unset_session(aux::session_interface* ses)
+	void unset_session(rtc_signaling* owner)
 	{
 		std::lock_guard<std::mutex> l(m_mutex);
-		if (m_ses == ses)
-			m_ses = nullptr;
+		if (m_owner != owner)
+			return;
+		m_owner = nullptr;
+		m_ses = nullptr;
 	}
 
 	void write(rtc::LogLevel level, rtc::string message)
@@ -108,6 +111,9 @@ public:
 
 private:
 	std::mutex m_mutex;
+	// Identify the active signaling instance without dereferencing its torrent
+	// during a delayed destructor (the torrent may already be gone).
+	rtc_signaling* m_owner = nullptr;
 	aux::session_interface* m_ses = nullptr;
 };
 
@@ -131,7 +137,7 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 
 	static std::once_flag flag;
 #if DEBUG_RTC
-	appender.set_session(&m_torrent->session());
+	appender.set_session(this, &m_torrent->session());
 	std::call_once(flag, []() {
 		using namespace std::placeholders;
 		rtc::InitLogger(
@@ -144,10 +150,7 @@ rtc_signaling::rtc_signaling(io_context& ioc,
 #endif
 }
 
-rtc_signaling::~rtc_signaling()
-{
-	close();
-}
+rtc_signaling::~rtc_signaling() { close(); }
 
 alert_manager& rtc_signaling::alerts() const
 {
@@ -157,9 +160,9 @@ alert_manager& rtc_signaling::alerts() const
 void rtc_signaling::close()
 {
 #if DEBUG_RTC
-	// RTC callbacks may keep signaling objects alive after close(). Stop
-	// forwarding their logs before the session can be destroyed.
-	appender.unset_session(&m_torrent->session());
+	// RTC callbacks can keep this object alive after its torrent and session
+	// are destroyed. Detach by owner identity, never by dereferencing m_torrent.
+	appender.unset_session(this);
 #endif
 	m_connections.clear();
 	m_num_incoming_connections = 0;
