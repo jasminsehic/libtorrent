@@ -6675,15 +6675,17 @@ namespace {
 			// This can happen if the peer immediately disconnects.
 #ifndef TORRENT_DISABLE_LOGGING
 			if (should_log())
-				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=0 reason=remote_endpoint_error code=%d"
-					, ec.value());
+				debug_log("PRIVACY_TRACE RTC_PEER_ADMISSION accepted=0 "
+						  "reason=remote_endpoint_error code=%d",
+					ec.value());
 #endif
 			return;
 		}
 
 		need_peer_list();
 		torrent_state st = get_peer_list_state();
-		if (torrent_peer* peerinfo = m_peer_list->add_rtc_peer(endpoint, peer_source_flags_t{}, {}, &st))
+		if (torrent_peer* peerinfo =
+				m_peer_list->add_rtc_peer(endpoint, peer_source_flags_t{}, {}, &st))
 		{
 #ifndef TORRENT_DISABLE_LOGGING
 			if (should_log())
