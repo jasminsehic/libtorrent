@@ -156,13 +156,30 @@ void http_connection::get(std::string const& url, time_duration timeout
 
 	bool const ssl = (protocol == "https");
 
+#if TORRENT_USE_I2P
+	// I2P destinations must use the SAM bridge, regardless of the regular
+	// tracker HTTP proxy. Never forward the .i2p hostname to that proxy
+	// (or resolve it through ordinary DNS) when SAM is unavailable.
+	bool const i2p = is_i2p_url(url);
+	if (i2p && i2p_conn == nullptr)
+	{
+		post(m_ios, std::bind(&http_connection::callback
+			, me, error_code(errors::no_i2p_router), span<char>{}));
+		return;
+	}
+#endif
+
 	std::stringstream request;
 
 	// exclude ssl here, because SSL assumes CONNECT support in the
 	// proxy and is handled at the lower layer
 	if (ps && (ps->type == settings_pack::http
 		|| ps->type == settings_pack::http_pw)
-		&& !ssl)
+		&& !ssl
+#if TORRENT_USE_I2P
+		&& !i2p
+#endif
+		)
 	{
 		// if we're using an http proxy and not an ssl
 		// connection, just do a regular http proxy request
