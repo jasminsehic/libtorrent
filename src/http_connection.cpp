@@ -163,8 +163,9 @@ void http_connection::get(std::string const& url, time_duration timeout
 	bool const i2p = is_i2p_url(url);
 	if (i2p && i2p_conn == nullptr)
 	{
-		post(m_ios, std::bind(&http_connection::callback
-			, me, error_code(errors::no_i2p_router), span<char>{}));
+		post(m_ios,
+			std::bind(
+				&http_connection::callback, me, error_code(errors::no_i2p_router), span<char>{}));
 		return;
 	}
 #endif
@@ -173,13 +174,11 @@ void http_connection::get(std::string const& url, time_duration timeout
 
 	// exclude ssl here, because SSL assumes CONNECT support in the
 	// proxy and is handled at the lower layer
-	if (ps && (ps->type == settings_pack::http
-		|| ps->type == settings_pack::http_pw)
-		&& !ssl
+	if (ps && (ps->type == settings_pack::http || ps->type == settings_pack::http_pw) && !ssl
 #if TORRENT_USE_I2P
 		&& !i2p
 #endif
-		)
+	)
 	{
 		// if we're using an http proxy and not an ssl
 		// connection, just do a regular http proxy request
