@@ -267,8 +267,7 @@ TORRENT_TEST(i2p_http_requires_sam_even_with_http_proxy)
 		ps.hostname = "127.0.0.1";
 		ps.port = 1;
 		ps.proxy_hostnames = true;
-		run_test("http://tracker.i2p/announce", 0, -1, 0
-			, error_code(errors::no_i2p_router), ps);
+		run_test("http://tracker.i2p/announce", 0, -1, 0, error_code(errors::no_i2p_router), ps);
 	}
 }
 #endif
