@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Minimal SAM bridge mock for the response-buffer lifetime regression test."""
 
-import socket
 import socketserver
 
 
