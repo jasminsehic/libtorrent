@@ -19,14 +19,11 @@ see LICENSE file.
 #include "libtorrent/session.hpp"
 #include "libtorrent/settings_pack.hpp"
 
-#include <boost/asio/read_until.hpp>
-#include <boost/asio/streambuf.hpp>
 #include <boost/asio/write.hpp>
 
 #include <array>
 #include <chrono>
 #include <functional>
-#include <istream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -461,18 +458,33 @@ struct invalid_id_sam
 	struct client : std::enable_shared_from_this<client>
 	{
 		explicit client(invalid_id_sam& s)
-			: server(s), socket(s.ios) {}
+			: server(s)
+			, socket(s.ios)
+		{}
 
 		void read()
 		{
 			auto self = shared_from_this();
-			boost::asio::async_read_until(socket, input, '\n'
-				, [self](error_code const& ec, std::size_t) {
-					if (ec) return;
-					std::istream stream(&self->input);
-					std::string cmd;
-					std::getline(stream, cmd);
-					self->command(cmd);
+			socket.async_read_some(boost::asio::buffer(next_byte),
+				[self](error_code const& ec, std::size_t size) {
+					if (ec)
+						return;
+					if (size == 0)
+					{
+						self->read();
+						return;
+					}
+					if (self->next_byte[0] == '\n')
+					{
+						std::string cmd = std::move(self->line);
+						self->line.clear();
+						self->command(cmd);
+					}
+					else
+					{
+						self->line.push_back(self->next_byte[0]);
+						self->read();
+					}
 				});
 		}
 
@@ -494,16 +506,14 @@ struct invalid_id_sam
 				std::string const id = session_id(cmd);
 				if (server.accepts == 1)
 				{
-					server.first_id_valid = server.ids.size() == 1
-						&& !id.empty() && id == server.ids[0];
+					server.first_id_valid =
+						server.ids.size() == 1 && !id.empty() && id == server.ids[0];
 					reply = "STREAM STATUS RESULT=INVALID_ID\n";
 				}
 				else
 				{
-					server.recovered = server.first_id_valid
-						&& server.ids.size() >= 2
-						&& server.ids[0] != server.ids[1]
-						&& id == server.ids[1];
+					server.recovered = server.first_id_valid && server.ids.size() >= 2
+						&& server.ids[0] != server.ids[1] && id == server.ids[1];
 					return;
 				}
 			}
@@ -512,16 +522,19 @@ struct invalid_id_sam
 
 			auto message = std::make_shared<std::string>(std::move(reply));
 			auto self = shared_from_this();
-			boost::asio::async_write(socket, boost::asio::buffer(*message)
-				, [self, message](error_code const& ec, std::size_t) {
-					if (!ec) self->read();
+			boost::asio::async_write(socket,
+				boost::asio::buffer(*message),
+				[self, message](error_code const& ec, std::size_t) {
+					if (!ec)
+						self->read();
 				});
 		}
 
 		static std::string session_id(std::string const& cmd)
 		{
 			auto const pos = cmd.find("ID=");
-			if (pos == std::string::npos) return {};
+			if (pos == std::string::npos)
+				return {};
 			auto const begin = pos + 3;
 			auto const end = cmd.find_first_of(" \r", begin);
 			return cmd.substr(begin, end - begin);
@@ -529,7 +542,8 @@ struct invalid_id_sam
 
 		invalid_id_sam& server;
 		tcp::socket socket;
-		boost::asio::streambuf input;
+		std::array<char, 1> next_byte{};
+		std::string line;
 	};
 
 	explicit invalid_id_sam(io_context& io)
@@ -543,7 +557,8 @@ struct invalid_id_sam
 	{
 		auto c = std::make_shared<client>(*this);
 		acceptor.async_accept(c->socket, [this, c](error_code const& ec) {
-			if (ec) return;
+			if (ec)
+				return;
 			clients.push_back(c);
 			c->read();
 			accept_next();

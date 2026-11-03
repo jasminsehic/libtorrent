@@ -6717,7 +6717,8 @@ namespace {
 			bool const selected = stream_init.peer_connection->getSelectedCandidatePair(
 				&local_candidate, &remote_candidate);
 			auto const selected_local_address = selected ? local_candidate.address() : std::nullopt;
-			auto const selected_remote_address = selected ? remote_candidate.address() : std::nullopt;
+			auto const selected_remote_address =
+				selected ? remote_candidate.address() : std::nullopt;
 			debug_log("PRIVACY_TRACE RTC_PEER_ADDRESS displayed=%s selected=%d "
 					  "selected_local=%s:%d selected_remote=%s:%d "
 					  "local_type=%d remote_type=%d",

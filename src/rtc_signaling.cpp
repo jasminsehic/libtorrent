@@ -87,11 +87,10 @@ public:
 		if (trace_start != std::string::npos)
 		{
 			std::string const trace = event.substr(trace_start);
-			bool const safe = trace.size() < 1024
-				&& std::all_of(trace.begin(), trace.end(), [](unsigned char c) {
-					return std::isalnum(c) || c == ' ' || c == '=' || c == ':'
-						|| c == '.' || c == '_' || c == '-' || c == '['
-						|| c == ']' || c == '%';
+			bool const safe =
+				trace.size() < 1024 && std::all_of(trace.begin(), trace.end(), [](unsigned char c) {
+					return std::isalnum(c) || c == ' ' || c == '=' || c == ':' || c == '.'
+						|| c == '_' || c == '-' || c == '[' || c == ']' || c == '%';
 				});
 			if (safe)
 				alerts.emplace_alert<log_alert>(trace.c_str());
