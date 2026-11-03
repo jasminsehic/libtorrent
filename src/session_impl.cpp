@@ -2547,7 +2547,8 @@ retry:
 				std::weak_ptr<session_impl> self = shared_from_this();
 				post(m_io_context, [self] {
 					auto sp = self.lock();
-					if (!sp || sp->m_abort) return;
+					if (!sp || sp->m_abort)
+						return;
 
 					error_code ignore;
 					if (sp->m_i2p_listen_socket)
