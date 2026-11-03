@@ -27,6 +27,12 @@ see LICENSE file.
 #include <functional>
 #include <fstream>
 
+#if TORRENT_USE_I2P
+#include "libtorrent/i2p_stream.hpp"
+#include <boost/asio/steady_timer.hpp>
+#include <chrono>
+#endif
+
 using namespace std::placeholders;
 using namespace lt;
 
@@ -586,3 +592,45 @@ TORRENT_TEST(reopen_network_sockets)
 #endif // TORRENT_DISABLE_ALERT_MSG
 #endif
 
+
+#if TORRENT_USE_I2P
+
+TORRENT_TEST(i2p_sam_reply_buffer_lifetime)
+{
+	int const port = start_sam_server();
+
+	io_context io;
+	i2p_connection sam(io);
+	boost::asio::steady_timer timeout(io);
+	bool callback_called = false;
+	error_code result;
+	std::string destination;
+
+	timeout.expires_after(std::chrono::seconds(5));
+	timeout.async_wait([&](error_code const& e) {
+		if (!e)
+		{
+			error_code ignore;
+			sam.close(ignore);
+		}
+	});
+
+	sam.open("127.0.0.1", port, i2p_session_options{}
+		, [&](error_code const& e) {
+			callback_called = true;
+			result = e;
+			destination = sam.local_endpoint();
+			timeout.cancel();
+		});
+
+	io.run();
+	error_code ignore;
+	sam.close(ignore);
+	stop_sam_server();
+
+	TEST_CHECK(callback_called);
+	TEST_CHECK(!result);
+	TEST_EQUAL(destination, "local-dest");
+}
+
+#endif // TORRENT_USE_I2P

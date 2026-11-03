@@ -1556,6 +1556,33 @@ void stop_websocket_server()
 	websocket_server_pid = 0;
 }
 
+namespace {
+pid_type sam_server_pid = 0;
+std::thread sam_server_reader;
+}
+
+int start_sam_server()
+{
+	TORRENT_ASSERT(sam_server_pid == 0);
+	TORRENT_ASSERT(!sam_server_reader.joinable());
+
+	std::vector<std::string> cmdlines;
+	for (auto const& python_exe : get_python())
+		cmdlines.push_back(python_exe + " .." SEPARATOR "sam_server.py");
+
+	spawned_process proc = spawn_with_retry(cmdlines, "sam_server.py");
+	sam_server_pid = proc.pid;
+	sam_server_reader = std::move(proc.stdout_reader);
+	return proc.port;
+}
+
+void stop_sam_server()
+{
+	if (sam_server_pid == 0)
+		return;
+	stop_and_join(sam_server_pid, sam_server_reader);
+	sam_server_pid = 0;
+}
 
 tcp::endpoint ep(char const* ip, int port)
 {
