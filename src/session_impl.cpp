@@ -1067,7 +1067,8 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 #endif
 
 #if TORRENT_USE_I2P
-		if (m_i2p_listen_socket && m_i2p_listen_socket->is_open())
+		// Cancel a pending SAM acceptor resolve/connect before TCP opens too.
+		if (m_i2p_listen_socket)
 		{
 			m_i2p_listen_socket->close(ec);
 			TORRENT_ASSERT(!ec);
@@ -2539,6 +2540,25 @@ retry:
 			if (should_log())
 				session_log("i2p SAM connection failure: %s", e.message().c_str());
 #endif
+			if (e == error_code(i2p_error::invalid_id, i2p_category()))
+			{
+				// The SAM session no longer exists. Defer disposal of the accept
+				// socket until its completion handler has returned.
+				std::weak_ptr<session_impl> self = shared_from_this();
+				post(m_io_context, [self] {
+					auto sp = self.lock();
+					if (!sp || sp->m_abort) return;
+
+					error_code ignore;
+					if (sp->m_i2p_listen_socket)
+					{
+						sp->m_i2p_listen_socket->close(ignore);
+						sp->m_i2p_listen_socket.reset();
+					}
+					sp->m_i2p_conn.close(ignore);
+					sp->schedule_i2p_reconnect();
+				});
+			}
 			return;
 		}
 		incoming_connection(std::move(*m_i2p_listen_socket));

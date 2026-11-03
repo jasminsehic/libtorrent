@@ -16,12 +16,20 @@ see LICENSE file.
 #include "libtorrent/socket.hpp"
 #include "libtorrent/error_code.hpp"
 #include "libtorrent/span.hpp"
+#include "libtorrent/session.hpp"
+#include "libtorrent/settings_pack.hpp"
+
+#include <boost/asio/read_until.hpp>
+#include <boost/asio/streambuf.hpp>
+#include <boost/asio/write.hpp>
 
 #include <array>
 #include <chrono>
 #include <functional>
+#include <istream>
 #include <memory>
 #include <string>
+#include <vector>
 
 using namespace lt;
 using namespace std::chrono_literals;
@@ -442,6 +450,149 @@ TORRENT_TEST(oversized_name_lookup_fails_queued_name_lookups)
 	TEST_EQUAL(r2->ec, size_error);
 	TEST_EQUAL(r1.use_count(), 1);
 	TEST_EQUAL(r2.use_count(), 1);
+}
+
+namespace {
+
+// In-process SAM bridge: the first STREAM ACCEPT loses its session ID; a
+// second SESSION CREATE and STREAM ACCEPT demonstrate automatic recovery.
+struct invalid_id_sam
+{
+	struct client : std::enable_shared_from_this<client>
+	{
+		explicit client(invalid_id_sam& s)
+			: server(s), socket(s.ios) {}
+
+		void read()
+		{
+			auto self = shared_from_this();
+			boost::asio::async_read_until(socket, input, '\n'
+				, [self](error_code const& ec, std::size_t) {
+					if (ec) return;
+					std::istream stream(&self->input);
+					std::string cmd;
+					std::getline(stream, cmd);
+					self->command(cmd);
+				});
+		}
+
+		void command(std::string const& cmd)
+		{
+			std::string reply;
+			if (cmd.rfind("HELLO ", 0) == 0)
+				reply = "HELLO REPLY RESULT=OK VERSION=3.1\n";
+			else if (cmd.rfind("SESSION CREATE ", 0) == 0)
+			{
+				server.ids.push_back(session_id(cmd));
+				reply = "SESSION STATUS RESULT=OK\n";
+			}
+			else if (cmd == "NAMING LOOKUP NAME=ME")
+				reply = "NAMING REPLY RESULT=OK NAME=ME VALUE=local-dest\n";
+			else if (cmd.rfind("STREAM ACCEPT ", 0) == 0)
+			{
+				++server.accepts;
+				std::string const id = session_id(cmd);
+				if (server.accepts == 1)
+				{
+					server.first_id_valid = server.ids.size() == 1
+						&& !id.empty() && id == server.ids[0];
+					reply = "STREAM STATUS RESULT=INVALID_ID\n";
+				}
+				else
+				{
+					server.recovered = server.first_id_valid
+						&& server.ids.size() >= 2
+						&& server.ids[0] != server.ids[1]
+						&& id == server.ids[1];
+					return;
+				}
+			}
+			else
+				return;
+
+			auto message = std::make_shared<std::string>(std::move(reply));
+			auto self = shared_from_this();
+			boost::asio::async_write(socket, boost::asio::buffer(*message)
+				, [self, message](error_code const& ec, std::size_t) {
+					if (!ec) self->read();
+				});
+		}
+
+		static std::string session_id(std::string const& cmd)
+		{
+			auto const pos = cmd.find("ID=");
+			if (pos == std::string::npos) return {};
+			auto const begin = pos + 3;
+			auto const end = cmd.find_first_of(" \r", begin);
+			return cmd.substr(begin, end - begin);
+		}
+
+		invalid_id_sam& server;
+		tcp::socket socket;
+		boost::asio::streambuf input;
+	};
+
+	explicit invalid_id_sam(io_context& io)
+		: ios(io)
+		, acceptor(io, tcp::endpoint(make_address_v4("127.0.0.1"), 0), false)
+	{
+		accept_next();
+	}
+
+	void accept_next()
+	{
+		auto c = std::make_shared<client>(*this);
+		acceptor.async_accept(c->socket, [this, c](error_code const& ec) {
+			if (ec) return;
+			clients.push_back(c);
+			c->read();
+			accept_next();
+		});
+	}
+
+	void close()
+	{
+		error_code ignore;
+		acceptor.close(ignore);
+		for (auto const& c : clients)
+			c->socket.close(ignore);
+	}
+
+	io_context& ios;
+	tcp::acceptor acceptor;
+	std::vector<std::shared_ptr<client>> clients;
+	std::vector<std::string> ids;
+	int accepts = 0;
+	bool first_id_valid = false;
+	bool recovered = false;
+};
+
+} // anonymous namespace
+
+TORRENT_TEST(invalid_id_accept_recreates_sam_session)
+{
+	io_context ios;
+	invalid_id_sam sam(ios);
+	settings_pack p;
+	p.set_str(settings_pack::listen_interfaces, "127.0.0.1:0");
+	p.set_str(settings_pack::i2p_hostname, "127.0.0.1");
+	p.set_int(settings_pack::i2p_port, int(sam.acceptor.local_endpoint().port()));
+	p.set_bool(settings_pack::enable_dht, false);
+	p.set_bool(settings_pack::enable_upnp, false);
+	p.set_bool(settings_pack::enable_natpmp, false);
+
+	{
+		session ses(p);
+		auto const deadline = std::chrono::steady_clock::now() + 10s;
+		while (!sam.recovered && ios.run_one_until(deadline))
+		{}
+	}
+	sam.close();
+
+	TEST_CHECK(sam.first_id_valid);
+	TEST_CHECK(sam.recovered);
+	TEST_EQUAL(sam.accepts, 2);
+	TEST_EQUAL(sam.ids.size(), std::size_t(2));
 }
 
 #else
