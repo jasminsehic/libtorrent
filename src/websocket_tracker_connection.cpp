@@ -72,15 +72,14 @@ void report_error(std::weak_ptr<request_callback> const& cb,
 }
 }
 
-websocket_tracker_connection::websocket_tracker_connection(
-	io_context& ios,
+websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
 	tracker_manager& man,
 	tracker_request const& req,
-	std::weak_ptr<request_callback> cb
-)
+	std::weak_ptr<request_callback> cb)
 	: tracker_connection(man, req, ios, cb)
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)
+	, m_announce_timer(ios)
 {
 	queue_request(req, std::move(cb));
 }
@@ -119,9 +118,14 @@ void websocket_tracker_connection::close()
 
 void websocket_tracker_connection::close(error_code const& ec, operation_t const op)
 {
+	m_announce_timer.cancel();
 	if (m_websocket)
 	{
-		m_websocket->close();
+		// An unresponsive tracker cannot be relied on to complete the close handshake.
+		if (op == operation_t::timer)
+			m_websocket->abort();
+		else
+			m_websocket->close();
 		m_websocket.reset();
 	}
 
@@ -226,6 +230,59 @@ void websocket_tracker_connection::queue_answer(tracker_answer ans)
 	if (is_open()) send_pending();
 }
 
+time_point websocket_tracker_connection::request_deadline() const
+{
+	int const timeout = m_man.settings().get_int(settings_pack::tracker_completion_timeout);
+	if (timeout <= 0)
+		return max_time();
+	return clock_type::now() + seconds(timeout);
+}
+
+void websocket_tracker_connection::update_announce_timer()
+{
+	m_announce_timer.cancel();
+	time_point earliest = max_time();
+	for (auto const& [info_hash, entry] : m_callbacks)
+	{
+		TORRENT_UNUSED(info_hash);
+		if (entry.pending)
+			earliest = std::min(earliest, entry.deadline);
+	}
+	if (earliest == max_time())
+		return;
+	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	m_announce_timer.expires_at(earliest);
+	m_announce_timer.async_wait(
+		std::bind(&websocket_tracker_connection::on_announce_timeout, shared_from_this(), _1));
+}
+
+void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
+{
+	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	if (ec)
+		return;
+
+	auto const now = clock_type::now();
+	auto const expired = std::find_if(m_callbacks.begin(),
+		m_callbacks.end(),
+		[now](auto const& entry) { return entry.second.pending && entry.second.deadline <= now; });
+	if (expired == m_callbacks.end())
+	{
+		update_announce_timer();
+		return;
+	}
+
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+		cb->debug_log(
+			"*** WEBSOCKET_TRACKER_ANNOUNCE_TIMEOUT [ url: %s ]", tracker_req().url.c_str());
+#endif
+
+	// A timed-out announce invalidates the shared WebSocket, including all
+	// other outstanding announces. A subsequent announce opens a new connection.
+	close(error_code(errors::timed_out), operation_t::timer);
+}
+
 void websocket_tracker_connection::send_pending()
 {
 	if (m_sending || m_pending.empty()) return;
@@ -251,13 +308,15 @@ void websocket_tracker_connection::send_pending()
 				auto const existing = m_callbacks.find(m.info_hash);
 				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
 #endif
-				m_callbacks[m.info_hash] = callback_entry{cb, m};
+				m_callbacks[m.info_hash] = callback_entry{cb, m, true, request_deadline()};
 			}
 
 			if (cb.lock())
 				m_requester = cb;
 
 			do_send(m);
+			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
+				update_announce_timer();
 		},
 		msg);
 }
@@ -458,6 +517,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 #endif
 		m_callbacks.erase(info_hash);
 		m_offer_quota.erase(info_hash);
+		update_announce_timer();
 		return;
 	}
 
@@ -476,6 +536,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 				operation_t::bittorrent,
 				response.failure_reason,
 				120s);
+			update_announce_timer();
 		}
 		return;
 	}
@@ -517,6 +578,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		cit->second.pending = false;
 
 		cb->tracker_response(cit->second.req, {}, {}, *response.resp);
+		update_announce_timer();
 	}
 }
 

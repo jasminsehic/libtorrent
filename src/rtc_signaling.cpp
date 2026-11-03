@@ -430,7 +430,7 @@ void rtc_signaling::on_data_channel(error_code const& ec
 	if (ec)
 	{
 #ifndef TORRENT_DISABLE_LOGGING
-		debug_log("*** RTC negotiation failed");
+		debug_log("*** RTC negotiation failed: %s (%d)", ec.message().c_str(), ec.value());
 #endif
 		return;
 	}
