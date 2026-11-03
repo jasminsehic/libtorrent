@@ -112,6 +112,7 @@ private:
 		std::shared_ptr<rtc::DataChannel> data_channel;
 		std::optional<peer_id> pid;
 		bool incoming = false;
+		description_handler description_completion;
 
 		deadline_timer timer;
 	};
