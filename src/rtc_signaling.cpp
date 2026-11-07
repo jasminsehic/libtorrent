@@ -33,9 +33,8 @@ see LICENSE file.
 #include <algorithm>
 #include <cctype>
 
-// Always emit redacted protocol/direction hints for privacy diagnostics.
-// Never forward raw libdatachannel messages (which may contain credentials, SDP
-// or network addresses).
+// Forward only explicitly structured privacy events from libjuice.
+// Never forward raw libdatachannel messages (which may contain credentials or SDP).
 #define DEBUG_RTC 1
 
 namespace libtorrent {
@@ -81,14 +80,22 @@ public:
 
 		(void)level;
 		std::string event(message.begin(), message.end());
-		// Forward only our narrowly-defined UDP endpoint trace. Other library
-		// messages may contain SDP, ICE secrets or TURN credentials.
-		auto const trace_start = event.find("PRIVACY_TRACE RTC_UDP_SELECTED ");
-		if (trace_start != std::string::npos)
+		// These are dedicated libjuice diagnostics, not arbitrary library logs.
+		// The whitelist rejects SDP, authentication fields and control characters.
+		char const* const prefixes[] = {
+			"PRIVACY_TRACE RTC_UDP_SELECTED ",
+			"PRIVACY_TRACE RTC_DATA_SEND ",
+			"PRIVACY_TRACE ICE_STUN_ROUTE ",
+			"PRIVACY_TRACE TURN_ALLOCATION "
+		};
+		for (char const* prefix : prefixes)
 		{
-			std::string const trace = event.substr(trace_start);
-			bool const safe =
-				trace.size() < 1024 && std::all_of(trace.begin(), trace.end(), [](unsigned char c) {
+			auto const pos = event.find(prefix);
+			if (pos == std::string::npos)
+				continue;
+			std::string const trace = event.substr(pos);
+			bool const safe = trace.size() < 1024
+				&& std::all_of(trace.begin(), trace.end(), [](unsigned char c) {
 					return std::isalnum(c) || c == ' ' || c == '=' || c == ':' || c == '.'
 						|| c == '_' || c == '-' || c == '[' || c == ']' || c == '%';
 				});
@@ -96,32 +103,8 @@ public:
 				alerts.emplace_alert<log_alert>(trace.c_str());
 			return;
 		}
-		std::transform(event.begin(), event.end(), event.begin(), [](unsigned char c) {
-			return char(std::tolower(c));
-		});
-		char const* protocol = nullptr;
-		if (event.find("stun") != std::string::npos)
-			protocol = "stun";
-		else if (event.find("turn") != std::string::npos)
-			protocol = "turn";
-		else if (event.find("ice") != std::string::npos)
-			protocol = "ice";
-		if (!protocol)
-			return;
-		char const* direction = "event";
-		if (event.find("sending") != std::string::npos || event.find("sent") != std::string::npos
-			|| event.find("send") != std::string::npos)
-			direction = "send";
-		else if (event.find("receiving") != std::string::npos
-			|| event.find("received") != std::string::npos
-			|| event.find("recv") != std::string::npos)
-			direction = "receive";
-		// Only report event classes. Raw library messages can contain
-		// candidate IPs, TURN authentication fields, or sensitive SDP.
-		char const* const label = protocol;
-		std::string const safe = std::string("PRIVACY_TRACE RTC_STACK_HINT protocol=") + label
-			+ " direction=" + direction + " raw=redacted";
-		alerts.emplace_alert<log_alert>(safe.c_str());
+		// Free-text log messages containing "STUN" do not imply a direct STUN
+		// request. Ignore them; backend routing events specify actual next hops.
 	}
 
 private:
@@ -461,13 +444,30 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 	}
 
 #ifndef TORRENT_DISABLE_LOGGING
-	debug_log("PRIVACY_TRACE ICE_CONFIG relay_only=%d stun=%d turn=%d rejected=%d policy=%s",
+	// "turn" counts accepted URLs, not necessarily servers usable by the
+	// active ICE backend. libjuice supports UDP TURN only; allocation success
+	// is reported separately by libjuice as TURN_ALLOCATION.
+	int turn_udp = 0;
+	int turn_tcp_tls = 0;
+	for (auto const& server : config.iceServers)
+	{
+		if (server.type != rtc::IceServer::Type::Turn)
+			continue;
+		if (server.relayType == rtc::IceServer::RelayType::TurnUdp)
+			++turn_udp;
+		else
+			++turn_tcp_tls;
+	}
+	debug_log("PRIVACY_TRACE ICE_CONFIG relay_only=%d stun=%d turn=%d "
+		"turn_udp=%d turn_tcp_tls=%d rejected=%d policy=%s",
 		int(relay_only),
 		accepted_stun,
 		accepted_turn,
+		turn_udp,
+		turn_tcp_tls,
 		rejected_servers,
 		config.iceTransportPolicy == rtc::TransportPolicy::Relay ? "relay" : "all");
-	if (relay_only && config.iceServers.empty())
+	if (relay_only && turn_udp == 0 && turn_tcp_tls == 0)
 		debug_log("PRIVACY_TRACE ICE_NO_TURN fail_closed=1");
 #else
 	(void)accepted_stun;
