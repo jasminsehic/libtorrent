@@ -42,6 +42,7 @@ see LICENSE file.
 #include <functional>
 #include <list>
 #include <locale>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -71,6 +72,60 @@ void report_error(std::weak_ptr<request_callback> const& cb,
 	if (auto c = cb.lock())
 		c->tracker_request_error(req, ec, op, ec.message(), seconds32(120));
 }
+
+#ifndef TORRENT_DISABLE_LOGGING
+// Inspect precisely the SDP copied into outgoing WSS offers/answers.
+// Never log SDP, ICE credentials, or the addresses of non-relay candidates.
+void log_relay_sdp_candidates(std::shared_ptr<request_callback> const& cb,
+	std::string const& sdp, char const* kind)
+{
+	if (!cb) return;
+	int relay = 0;
+	int nonrelay = 0;
+	int malformed = 0;
+	int exposed_related = 0;
+	std::istringstream lines(sdp);
+	std::string line;
+	while (std::getline(lines, line))
+	{
+		if (line.compare(0, 12, "a=candidate:") != 0) continue;
+		std::istringstream candidate(line.substr(12));
+		std::string foundation, component, protocol, priority, ip, port, typ, type;
+		if (!(candidate >> foundation >> component >> protocol >> priority
+			>> ip >> port >> typ >> type) || typ != "typ")
+		{
+			++malformed;
+			continue;
+		}
+		if (type != "relay")
+		{
+			++nonrelay;
+			continue;
+		}
+		++relay;
+		std::string key, value;
+		while (candidate >> key >> value)
+		{
+			if (key == "raddr" && value != "0.0.0.0" && value != "::")
+				++exposed_related;
+		}
+		// Restrict logs to numeric address and port characters.
+		bool const safe_ip = !ip.empty() && std::all_of(ip.begin(), ip.end(),
+			[](unsigned char c) { return std::isxdigit(c) || c == ':' || c == '.'; });
+		bool const safe_port = !port.empty() && std::all_of(port.begin(), port.end(),
+			[](unsigned char c) { return std::isdigit(c); });
+		if (safe_ip && safe_port)
+			cb->debug_log("PRIVACY_TRACE WS_SDP_RELAY kind=%s ip=%s port=%s",
+				kind, ip.c_str(), port.c_str());
+		else
+			++malformed;
+	}
+	cb->debug_log("PRIVACY_TRACE WS_SDP_CHECK kind=%s relay_only=1 relay=%d "
+		"nonrelay=%d malformed=%d exposed_related=%d violation=%d",
+		kind, relay, nonrelay, malformed, exposed_related,
+		int(nonrelay != 0 || malformed != 0 || exposed_related != 0));
+}
+#endif
 }
 
 websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
@@ -378,6 +433,10 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 		json::object &obj = payload_offer["offer"].emplace_object();
 		obj["type"] = "offer";
 		obj["sdp"] = offer.sdp;
+#ifndef TORRENT_DISABLE_LOGGING
+		if (m_man.settings().get_bool(settings_pack::webtorrent_relay_only))
+			log_relay_sdp_candidates(requester(), offer.sdp, "offer");
+#endif
 		offers_array.emplace_back(std::move(payload_offer));
 	}
 
@@ -408,6 +467,10 @@ void websocket_tracker_connection::do_send(tracker_answer const& ans)
 	json::object &obj = payload["answer"].emplace_object();
 	obj["type"] = "answer";
 	obj["sdp"] = ans.answer.sdp;
+#ifndef TORRENT_DISABLE_LOGGING
+	if (m_man.settings().get_bool(settings_pack::webtorrent_relay_only))
+		log_relay_sdp_candidates(requester(), ans.answer.sdp, "answer");
+#endif
 
 	std::string const data = json::serialize(payload);
 	m_write_data.assign(data.begin(), data.end());
