@@ -398,9 +398,15 @@ namespace aux {
 			// enabled, you need to disable it and re-enable it.
 			natpmp_gateway,
 
-			// This is the STUN server used by WebTorrent to enable ICE NAT
-			// traversal for WebRTC. It must have the format ``hostname:port``.
+			// WebTorrent STUN servers, one per line. Legacy hostname:port
+			// values remain accepted, as do stun: URLs.
+			// Ignored when webtorrent_relay_only is enabled.
 			webtorrent_stun_server,
+
+			// WebTorrent TURN servers, one URI per line, with optional URL-encoded
+			// credentials (e.g. turn://user:password@host:3478?transport=udp).
+			// Supports turn: and turns: URIs. Keep credentials confidential.
+			webtorrent_turn_servers,
 
 			max_string_setting_internal
 		};
@@ -1086,6 +1092,10 @@ namespace aux {
 			// updated) are not removed, and remain in use until they are
 			// naturally evicted.
 			apply_filter_to_dht,
+
+			// Require all WebTorrent ICE connections to use TURN relays. STUN
+			// entries are ignored and no direct candidate can be used.
+			webtorrent_relay_only,
 
 			max_bool_setting_internal
 		};

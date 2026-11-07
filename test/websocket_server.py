@@ -11,13 +11,47 @@ from datetime import datetime
 sys.path = sys.path[1:]
 
 import websockets
+from websockets.legacy.server import serve
+
+server_mode = 'normal'
+
+
+class IgnorePongOnceProtocol(websockets.WebSocketServerProtocol):
+    connection_count = 0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.suppress_pongs = server_mode == 'reconnect' and type(self).connection_count == 0
+        type(self).connection_count += 1
+
+    async def pong(self, data=b''):
+        if self.suppress_pongs:
+            # Keep the first connection open but stop it proving liveness.
+            return
+        await super().pong(data)
+
+connection_count = 0
 
 logger = logging.getLogger('websockets')
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(sys.stdout))
 
 
+connections = 0
+
+
 async def handle(websocket):
+    global connections
+    connections += 1
+    connection_index = connections
+    ignored_info_hash = None
+    global connection_count
+    # silent: never respond
+    # silent-first-connection: ignore announces on the first connection only
+    # partial-first-connection: respond to a subset of requests on the first connection
+    connection_number = connection_count
+    connection_count += 1
+
     # the tracker behavior to simulate:
     # normal: respond to every announce
     # failure: respond to every announce with a failure reason
@@ -27,7 +61,16 @@ async def handle(websocket):
     # bare-failure: inject a failure response without an info_hash, then send
     #   a normal, correlated response on the same connection. Tests that the
     #   client ignores the uncorrelated failure without closing the connection.
+    # offer-close: deliver a fake RTC offer, then close the WebSocket while
+    #   the client's answer callback may still be outstanding.
+    # reconnect: suppress pongs on the first connection, respond to its initial
+    #   hybrid-torrent announces, then ignore further announces on that socket.
+    #   A replacement connection responds normally.
+    # pong: delay a reannounce response while answering pings; ignore announces
+    #   on replacement connections so reconnecting cannot satisfy the test.
     mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
+    announce_count = 0
+    stale_connection = mode == 'reconnect' and getattr(websocket, 'suppress_pongs', False)
 
     try:
         while True:
@@ -40,7 +83,26 @@ async def handle(websocket):
                 file=sys.stderr)
 
             request = json.loads(message)
+            if mode == "silent":
+                continue
+            if mode == "silent-first-connection" and connection_index == 1:
+                continue
             info_hash = request["info_hash"]
+            if mode == 'partial-first-connection' and connection_index == 1:
+                if ignored_info_hash is None:
+                    ignored_info_hash = info_hash
+                if info_hash == ignored_info_hash:
+                    continue
+            announce_count += 1
+
+            # Let the initial hybrid-torrent announces complete on the first
+            # connection, then require stale-connection recovery for later ones.
+            if stale_connection and announce_count > 2:
+                continue
+
+            # This scenario only succeeds if the original connection survives.
+            if mode == 'pong' and connection_number > 0:
+                continue
 
             if mode == 'failure':
                 await websocket.send(json.dumps({
@@ -48,9 +110,24 @@ async def handle(websocket):
                     "info_hash": info_hash}))
                 continue
 
+            if mode == 'offer-close':
+                await websocket.send(json.dumps({
+                    "action": "announce",
+                    "info_hash": info_hash,
+                    "offer_id": "01234567890123456789",
+                    "peer_id": "98765432109876543210",
+                    "offer": {"type": "offer", "sdp": "v=0\\r\\n"}}))
+                await websocket.close()
+                continue
+
             if mode == 'bare-failure':
                 await websocket.send(json.dumps({
                     "failure reason": "Invalid request"}))
+
+            # Delay a reannounce response without sending application data.
+            # The pong scenario must survive this delay on the original socket.
+            if mode == 'pong' and announce_count == 3:
+                await asyncio.sleep(22)
 
             response = {}
             response["info_hash"] = info_hash
@@ -70,6 +147,7 @@ async def handle(websocket):
 
 
 async def main() -> None:
+    global server_mode
     use_ssl = sys.argv[1] != '0'
     print('python version: %s' % sys.version_info.__str__())
 
@@ -79,7 +157,9 @@ async def main() -> None:
     else:
         ssl_context = None
 
-    server = await websockets.serve(handle, '127.0.0.1', 0, ssl=ssl_context)
+    server_mode = sys.argv[3] if len(sys.argv) > 3 else 'normal'
+    server = await serve(handle, '127.0.0.1', 0, ssl=ssl_context,
+        create_protocol=IgnorePongOnceProtocol)
     port = server.sockets[0].getsockname()[1]
     print(f'LISTENING_PORT {port}')
     sys.stdout.flush()

@@ -1,51 +1,34 @@
 diff --git a/Jamfile b/Jamfile
-index 9c74046..cb44ae4 100644
 --- a/Jamfile
 +++ b/Jamfile
-@@ -110,7 +110,19 @@ rule make_libusrsctp_msvc ( targets * : sources * : properties * )
- {
- 	local VARIANT = [ feature.get-values <variant> : $(properties) ] ;
- 	VARIANT on $(targets) = $(VARIANT) ;
--	BUILD_DIR on $(targets) = "build-$(VARIANT)" ;
-+
-+	local ADDRESS_MODEL = [ feature.get-values <address-model> : $(properties) ] ;
-+	local ARCH = x64 ;
-+	if $(ADDRESS_MODEL) = 32
-+	{ ARCH = Win32 ; }
-+	ARCH on $(targets) = $(ARCH) ;
-+
+@@ -117,6 +117,11 @@
+ 	{ ARCH = Win32 ; }
+ 	ARCH on $(targets) = $(ARCH) ;
+ 
 +	local CONFIG = Release ;
 +	if $(VARIANT) = debug
 +	{ CONFIG = Debug ; }
 +	CONFIG on $(targets) = $(CONFIG) ;
 +
-+	BUILD_DIR on $(targets) = "build-$(ARCH)-$(VARIANT)" ;
+ 	BUILD_DIR on $(targets) = "build-$(ARCH)-$(VARIANT)" ;
  }
  actions make_libusrsctp_msvc
- {
-@@ -118,8 +130,8 @@ actions make_libusrsctp_msvc
-     cd $(CWD)/deps/usrsctp
+@@ -126,9 +131,9 @@
      mkdir $(BUILD_DIR)
      cd $(BUILD_DIR)
--    cmake -G "Visual Studio 17 2022" -Dsctp_werror=0 -Dsctp_build_shared_lib=0 -Dsctp_build_programs=0 -Dsctp_inet=0 -Dsctp_inet6=0 ..
--    msbuild usrsctplib.sln /property:Configuration=$(VARIANT)
-+    cmake -G "Visual Studio 17 2022" -A $(ARCH) -Dsctp_werror=0 -Dsctp_build_shared_lib=0 -Dsctp_build_programs=0 -Dsctp_inet=0 -Dsctp_inet6=0 ..
+     cmake -G "Visual Studio 17 2022" -A $(ARCH) -Dsctp_werror=0 -Dsctp_build_shared_lib=0 -Dsctp_build_programs=0 -Dsctp_inet=0 -Dsctp_inet6=0 ..
 +    msbuild usrsctplib.sln /property:Configuration=$(VARIANT) /property:Platform=$(ARCH)
+-    msbuild usrsctplib.sln /property:Configuration=$(VARIANT)
      cd %OLDD%
--    cp $(CWD)/deps/usrsctp/$(BUILD_DIR)/usrsctplib/Release/usrsctp.lib $(<)
 +    cp $(CWD)/deps/usrsctp/$(BUILD_DIR)/usrsctplib/$(CONFIG)/usrsctp.lib $(<)
+-    cp $(CWD)/deps/usrsctp/$(BUILD_DIR)/usrsctplib/Release/usrsctp.lib $(<)
  }
-@@ -165,14 +177,26 @@ rule make_libjuice_msvc ( targets * : sources * : properties * )
- {
- 	local VARIANT = [ feature.get-values <variant> : $(properties) ] ;
- 	VARIANT on $(targets) = $(VARIANT) ;
-+
-+	local ADDRESS_MODEL = [ feature.get-values <address-model> : $(properties) ] ;
-+	local ARCH = x64 ;
-+	if $(ADDRESS_MODEL) = 32
-+	{ ARCH = Win32 ; }
-+	ARCH on $(targets) = $(ARCH) ;
-+
+ 
+ make libjuice-gnutls.a : : @make_libjuice_gnutls ;
+@@ -179,6 +184,11 @@
+ 	{ ARCH = Win32 ; }
+ 	ARCH on $(targets) = $(ARCH) ;
+ 
 +	local CONFIG = Release ;
 +	if $(VARIANT) = debug
 +	{ CONFIG = Debug ; }
@@ -53,26 +36,16 @@ index 9c74046..cb44ae4 100644
 +
  	if <gnutls>on in $(properties)
  	{
--		BUILD_DIR on $(targets) += "build-gnutls-$(VARIANT)" ;
-+		BUILD_DIR on $(targets) += "build-gnutls-$(ARCH)-$(VARIANT)" ;
- 		CMAKEOPTS on $(targets) = "-DUSE_NETTLE=1" ;
- 	}
- 	else
- 	{
--		BUILD_DIR on $(targets) += "build-openssl-$(VARIANT)" ;
-+		BUILD_DIR on $(targets) += "build-openssl-$(ARCH)-$(VARIANT)" ;
- 		CMAKEOPTS on $(targets) = "-DUSE_NETTLE=0" ;
- 	}
- }
-@@ -182,8 +206,8 @@ actions make_libjuice_msvc
-     cd $(CWD)/deps/libjuice
+ 		BUILD_DIR on $(targets) += "build-gnutls-$(ARCH)-$(VARIANT)" ;
+@@ -197,9 +207,9 @@
      mkdir $(BUILD_DIR)
      cd $(BUILD_DIR)
--    cmake -G "Visual Studio 17 2022" $(CMAKEOPTS) ..
--    msbuild libjuice.sln /property:Configuration=$(VARIANT)
-+    cmake -G "Visual Studio 17 2022" -A $(ARCH) $(CMAKEOPTS) ..
+     cmake -G "Visual Studio 17 2022" -A $(ARCH) $(CMAKEOPTS) ..
 +    msbuild libjuice.sln /property:Configuration=$(VARIANT) /property:Platform=$(ARCH)
+-    msbuild libjuice.sln /property:Configuration=$(VARIANT)
      cd %OLDD%
--    cp $(CWD)/deps/libjuice/$(BUILD_DIR)/Release/juice-static.lib $(<)
 +    cp $(CWD)/deps/libjuice/$(BUILD_DIR)/$(CONFIG)/juice-static.lib $(<)
+-    cp $(CWD)/deps/libjuice/$(BUILD_DIR)/Release/juice-static.lib $(<)
  }
+ 
+ # the search path to pick up the openssl libraries from. This is the <search>

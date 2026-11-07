@@ -25,6 +25,7 @@ see LICENSE file.
 #include "libtorrent/aux_/scope_end.hpp"
 #include "libtorrent/span.hpp"
 #include "libtorrent/aux_/tracker_manager.hpp"
+#include "libtorrent/aux_/proxy_settings.hpp"
 
 #include "libtorrent/aux_/disable_warnings_push.hpp"
 #include <boost/system/system_error.hpp>
@@ -41,6 +42,7 @@ see LICENSE file.
 #include <functional>
 #include <list>
 #include <locale>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -70,17 +72,70 @@ void report_error(std::weak_ptr<request_callback> const& cb,
 	if (auto c = cb.lock())
 		c->tracker_request_error(req, ec, op, ec.message(), seconds32(120));
 }
+
+#ifndef TORRENT_DISABLE_LOGGING
+// Inspect precisely the SDP copied into outgoing WSS offers/answers.
+// Never log SDP, ICE credentials, or the addresses of non-relay candidates.
+void log_relay_sdp_candidates(std::shared_ptr<request_callback> const& cb,
+	std::string const& sdp, char const* kind)
+{
+	if (!cb) return;
+	int relay = 0;
+	int nonrelay = 0;
+	int malformed = 0;
+	int exposed_related = 0;
+	std::istringstream lines(sdp);
+	std::string line;
+	while (std::getline(lines, line))
+	{
+		if (line.compare(0, 12, "a=candidate:") != 0) continue;
+		std::istringstream candidate(line.substr(12));
+		std::string foundation, component, protocol, priority, ip, port, typ, type;
+		if (!(candidate >> foundation >> component >> protocol >> priority
+			>> ip >> port >> typ >> type) || typ != "typ")
+		{
+			++malformed;
+			continue;
+		}
+		if (type != "relay")
+		{
+			++nonrelay;
+			continue;
+		}
+		++relay;
+		std::string key, value;
+		while (candidate >> key >> value)
+		{
+			if (key == "raddr" && value != "0.0.0.0" && value != "::")
+				++exposed_related;
+		}
+		// Restrict logs to numeric address and port characters.
+		bool const safe_ip = !ip.empty() && std::all_of(ip.begin(), ip.end(),
+			[](unsigned char c) { return std::isxdigit(c) || c == ':' || c == '.'; });
+		bool const safe_port = !port.empty() && std::all_of(port.begin(), port.end(),
+			[](unsigned char c) { return std::isdigit(c); });
+		if (safe_ip && safe_port)
+			cb->debug_log("PRIVACY_TRACE WS_SDP_RELAY kind=%s ip=%s port=%s",
+				kind, ip.c_str(), port.c_str());
+		else
+			++malformed;
+	}
+	cb->debug_log("PRIVACY_TRACE WS_SDP_CHECK kind=%s relay_only=1 relay=%d "
+		"nonrelay=%d malformed=%d exposed_related=%d violation=%d",
+		kind, relay, nonrelay, malformed, exposed_related,
+		int(nonrelay != 0 || malformed != 0 || exposed_related != 0));
+}
+#endif
 }
 
-websocket_tracker_connection::websocket_tracker_connection(
-	io_context& ios,
+websocket_tracker_connection::websocket_tracker_connection(io_context& ios,
 	tracker_manager& man,
 	tracker_request const& req,
-	std::weak_ptr<request_callback> cb
-)
+	std::weak_ptr<request_callback> cb)
 	: tracker_connection(man, req, ios, cb)
 	, m_io_context(ios)
 	, m_ssl_context(req.ssl_ctx)
+	, m_announce_timer(ios)
 {
 	queue_request(req, std::move(cb));
 }
@@ -91,8 +146,9 @@ void websocket_tracker_connection::start()
 
 	auto const& settings = m_man.settings();
 	auto const& req = tracker_req();
-	m_websocket =
-		std::make_shared<aux::websocket_stream>(m_io_context, m_man.host_resolver(), m_ssl_context);
+	proxy_settings const proxy(settings);
+	m_websocket = std::make_shared<aux::websocket_stream>(
+		m_io_context, m_man.host_resolver(), m_ssl_context, proxy);
 
 	// in anonymous mode we omit the user agent to mitigate fingerprinting of
 	// the client. Private torrents is an exception because some private
@@ -103,7 +159,23 @@ void websocket_tracker_connection::start()
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_CONNECT [ url: %s ]", req.url.c_str());
+	{
+		bool const proxied = proxy.type != settings_pack::none && proxy.proxy_tracker_connections;
+		cb->debug_log("PRIVACY_TRACE WS_PROXY decision=%s type=%d tracker_proxy_enabled=%d "
+					  "remote_dns_requested=%d scheme=%s",
+			proxied ? "proxy" : "direct",
+			int(proxy.type),
+			int(proxy.proxy_tracker_connections),
+			int(proxied && proxy.proxy_hostnames),
+			req.url.compare(0, 6, "wss://") == 0 ? "wss" : "ws");
+	}
+#endif
+
+#ifndef TORRENT_DISABLE_LOGGING
+	// Count actual async_connect calls, not a previous debug message that no
+	// longer exists. This also supports the stale-answer reconnect regression.
+	if (auto cb = requester())
+		cb->debug_log("PRIVACY_TRACE WS_CONNECT_ATTEMPT");
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_connect");
@@ -119,9 +191,14 @@ void websocket_tracker_connection::close()
 
 void websocket_tracker_connection::close(error_code const& ec, operation_t const op)
 {
+	m_announce_timer.cancel();
 	if (m_websocket)
 	{
-		m_websocket->close();
+		// An unresponsive tracker cannot be relied on to complete the close handshake.
+		if (op == operation_t::timer)
+			m_websocket->abort();
+		else
+			m_websocket->close();
 		m_websocket.reset();
 	}
 
@@ -222,8 +299,64 @@ void websocket_tracker_connection::queue_request(tracker_request req, std::weak_
 
 void websocket_tracker_connection::queue_answer(tracker_answer ans)
 {
+	if (!is_open())
+		return;
+
 	m_pending.emplace_back(tracker_message{std::move(ans)}, std::weak_ptr<request_callback>{});
-	if (is_open()) send_pending();
+	send_pending();
+}
+
+time_point websocket_tracker_connection::request_deadline() const
+{
+	int const timeout = m_man.settings().get_int(settings_pack::tracker_completion_timeout);
+	if (timeout <= 0)
+		return max_time();
+	return clock_type::now() + seconds(timeout);
+}
+
+void websocket_tracker_connection::update_announce_timer()
+{
+	m_announce_timer.cancel();
+	time_point earliest = max_time();
+	for (auto const& [info_hash, entry] : m_callbacks)
+	{
+		TORRENT_UNUSED(info_hash);
+		if (entry.pending)
+			earliest = std::min(earliest, entry.deadline);
+	}
+	if (earliest == max_time())
+		return;
+	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	m_announce_timer.expires_at(earliest);
+	m_announce_timer.async_wait(
+		std::bind(&websocket_tracker_connection::on_announce_timeout, shared_from_this(), _1));
+}
+
+void websocket_tracker_connection::on_announce_timeout(error_code const& ec)
+{
+	COMPLETE_ASYNC("websocket_tracker_connection::on_announce_timeout");
+	if (ec)
+		return;
+
+	auto const now = clock_type::now();
+	auto const expired = std::find_if(m_callbacks.begin(),
+		m_callbacks.end(),
+		[now](auto const& entry) { return entry.second.pending && entry.second.deadline <= now; });
+	if (expired == m_callbacks.end())
+	{
+		update_announce_timer();
+		return;
+	}
+
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+		cb->debug_log(
+			"*** WEBSOCKET_TRACKER_ANNOUNCE_TIMEOUT [ url: %s ]", tracker_req().url.c_str());
+#endif
+
+	// A timed-out announce invalidates the shared WebSocket, including all
+	// other outstanding announces. A subsequent announce opens a new connection.
+	close(error_code(errors::timed_out), operation_t::timer);
 }
 
 void websocket_tracker_connection::send_pending()
@@ -251,13 +384,15 @@ void websocket_tracker_connection::send_pending()
 				auto const existing = m_callbacks.find(m.info_hash);
 				TORRENT_ASSERT(existing == m_callbacks.end() || !existing->second.pending);
 #endif
-				m_callbacks[m.info_hash] = callback_entry{cb, m};
+				m_callbacks[m.info_hash] = callback_entry{cb, m, true, request_deadline()};
 			}
 
 			if (cb.lock())
 				m_requester = cb;
 
 			do_send(m);
+			if constexpr (std::is_same_v<std::decay_t<decltype(m)>, tracker_request>)
+				update_announce_timer();
 		},
 		msg);
 }
@@ -298,6 +433,10 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 		json::object &obj = payload_offer["offer"].emplace_object();
 		obj["type"] = "offer";
 		obj["sdp"] = offer.sdp;
+#ifndef TORRENT_DISABLE_LOGGING
+		if (m_man.settings().get_bool(settings_pack::webtorrent_relay_only))
+			log_relay_sdp_candidates(requester(), offer.sdp, "offer");
+#endif
 		offers_array.emplace_back(std::move(payload_offer));
 	}
 
@@ -306,7 +445,8 @@ void websocket_tracker_connection::do_send(tracker_request const& req)
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE [ size: %ld, data: %s ]", long(m_write_data.size()), m_write_data.c_str());
+		cb->debug_log(
+			"PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted", long(m_write_data.size()));
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
@@ -327,14 +467,18 @@ void websocket_tracker_connection::do_send(tracker_answer const& ans)
 	json::object &obj = payload["answer"].emplace_object();
 	obj["type"] = "answer";
 	obj["sdp"] = ans.answer.sdp;
+#ifndef TORRENT_DISABLE_LOGGING
+	if (m_man.settings().get_bool(settings_pack::webtorrent_relay_only))
+		log_relay_sdp_candidates(requester(), ans.answer.sdp, "answer");
+#endif
 
 	std::string const data = json::serialize(payload);
 	m_write_data.assign(data.begin(), data.end());
 
 #ifndef TORRENT_DISABLE_LOGGING
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_WRITE [ size: %ld, data: %s ]"
-				, long(m_write_data.size()), m_write_data.c_str());
+		cb->debug_log(
+			"PRIVACY_TRACE WS_WRITE bytes=%ld payload=redacted", long(m_write_data.size()));
 #endif
 
 	ADD_OUTSTANDING_ASYNC("websocket_tracker_connection::on_write");
@@ -375,6 +519,11 @@ void websocket_tracker_connection::on_timeout(error_code const& ec)
 void websocket_tracker_connection::on_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_tracker_connection::on_connect");
+#ifndef TORRENT_DISABLE_LOGGING
+	if (auto cb = requester())
+		cb->debug_log(
+			"PRIVACY_TRACE WS_CONNECT result=%s error=%d", ec ? "failed" : "connected", ec.value());
+#endif
 	if (ec)
 	{
 		fail(ec, operation_t::connect);
@@ -408,9 +557,8 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 	auto const& buf = m_read_buffer.data();
 
 #ifndef TORRENT_DISABLE_LOGGING
-	std::string str(static_cast<char const*>(buf.data()), buf.size());
 	if (auto cb = requester())
-		cb->debug_log("*** WEBSOCKET_TRACKER_READ [ size: %ld, data: %s ]", long(str.size()), str.c_str());
+		cb->debug_log("PRIVACY_TRACE WS_READ bytes=%ld payload=redacted", long(buf.size()));
 #endif
 
 	auto ret = parse_websocket_tracker_response({static_cast<char const*>(buf.data()), long(buf.size())}, ec);
@@ -458,6 +606,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 #endif
 		m_callbacks.erase(info_hash);
 		m_offer_quota.erase(info_hash);
+		update_announce_timer();
 		return;
 	}
 
@@ -476,6 +625,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 				operation_t::bittorrent,
 				response.failure_reason,
 				120s);
+			update_announce_timer();
 		}
 		return;
 	}
@@ -487,15 +637,17 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		{
 			--quota->second;
 
-			response.offer->answer_callback = [hash = info_hash,
-												  self = shared_from_this(),
-												  id = response.offer->id,
-												  pid = response.offer->pid](
-												  peer_id const& local_pid,
-												  aux::rtc_answer const& answer) {
-				self->queue_answer({std::move(hash), std::move(local_pid), std::move(answer)});
-				self->start();
-			};
+			// RTC answer generation may finish after this WebSocket has closed.
+			// Don't retain or reopen a connection that has been replaced.
+			response.offer->answer_callback =
+				[hash = info_hash,
+					weak_self = std::weak_ptr<websocket_tracker_connection>(shared_from_this())](
+					peer_id const& local_pid, aux::rtc_answer const& answer) {
+					auto self = weak_self.lock();
+					if (!self)
+						return;
+					self->queue_answer({hash, local_pid, answer});
+				};
 
 			cb->on_rtc_offer(*response.offer);
 		}
@@ -517,6 +669,7 @@ void websocket_tracker_connection::on_read(error_code ec, std::size_t /* bytes_r
 		cit->second.pending = false;
 
 		cb->tracker_response(cit->second.req, {}, {}, *response.resp);
+		update_announce_timer();
 	}
 }
 

@@ -24,6 +24,7 @@ int settings_key(int const tag)
 		case SET_DHT_BOOTSTRAP_NODES: return sp::dht_bootstrap_nodes;
 		case SET_NATPMP_GATEWAY: return sp::natpmp_gateway;
 		case SET_WEBTORRENT_STUN_SERVER: return sp::webtorrent_stun_server;
+		case SET_WEBTORRENT_TURN_SERVERS: return sp::webtorrent_turn_servers;
 		case SET_ALLOW_MULTIPLE_CONNECTIONS_PER_IP: return sp::allow_multiple_connections_per_ip;
 		case SET_SEND_REDUNDANT_HAVE: return sp::send_redundant_have;
 		case SET_USE_DHT_AS_FALLBACK: return sp::use_dht_as_fallback;
@@ -89,6 +90,7 @@ int settings_key(int const tag)
 		case SET_DISK_DISABLE_COPY_ON_WRITE: return sp::disk_disable_copy_on_write;
 		case SET_ALLOW_MULTIPLE_CONNECTIONS_PER_PID: return sp::allow_multiple_connections_per_pid;
 		case SET_APPLY_FILTER_TO_DHT: return sp::apply_filter_to_dht;
+		case SET_WEBTORRENT_RELAY_ONLY: return sp::webtorrent_relay_only;
 		case SET_TRACKER_COMPLETION_TIMEOUT: return sp::tracker_completion_timeout;
 		case SET_TRACKER_RECEIVE_TIMEOUT: return sp::tracker_receive_timeout;
 		case SET_STOP_TRACKER_TIMEOUT: return sp::stop_tracker_timeout;

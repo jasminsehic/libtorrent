@@ -476,9 +476,10 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 	} // anonymous namespace
 #endif // TORRENT_SSL_PEERS
 
-	session_impl::session_impl(io_context& ioc, settings_pack const& pack
-		, disk_io_constructor_type disk_io_constructor
-		, session_flags_t const flags)
+	session_impl::session_impl(io_context& ioc,
+		settings_pack const& pack,
+		disk_io_constructor_type disk_io_constructor,
+		session_flags_t const flags)
 		: m_settings(pack)
 		, m_io_context(ioc)
 #if TORRENT_USE_SSL
@@ -487,23 +488,26 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 		, m_peer_ssl_ctx(ssl::context::tls)
 #endif
 #endif // TORRENT_USE_SSL
-		, m_alerts(m_settings.get_int(settings_pack::alert_queue_size)
-			, alert_category_t{static_cast<unsigned int>(m_settings.get_int(settings_pack::alert_mask))})
-		, m_disk_thread((disk_io_constructor ? disk_io_constructor : default_disk_io_constructor)
-			(m_io_context, m_settings, m_stats_counters))
+		, m_alerts(m_settings.get_int(settings_pack::alert_queue_size),
+			  alert_category_t{
+				  static_cast<unsigned int>(m_settings.get_int(settings_pack::alert_mask))})
+		, m_disk_thread((disk_io_constructor ? disk_io_constructor : default_disk_io_constructor)(
+			  m_io_context, m_settings, m_stats_counters))
 		, m_download_rate(peer_connection::download_channel)
 		, m_upload_rate(peer_connection::upload_channel)
 		, m_host_resolver(m_io_context)
 		, m_tracker_manager(
-			std::bind(&session_impl::send_udp_packet_listen, this, _1, _2, _3, _4, _5)
-			, std::bind(&session_impl::send_udp_packet_hostname_listen, this, _1, _2, _3, _4, _5, _6)
-			, m_stats_counters
-			, m_host_resolver
-			, m_settings
+			  std::bind(&session_impl::send_udp_packet_listen, this, _1, _2, _3, _4, _5),
+			  std::bind(
+				  &session_impl::send_udp_packet_hostname_listen, this, _1, _2, _3, _4, _5, _6),
+			  m_stats_counters,
+			  m_host_resolver,
+			  m_settings
 #if !defined TORRENT_DISABLE_LOGGING || TORRENT_USE_ASSERTS
-			, *this
+			  ,
+			  *this
 #endif
-			)
+			  )
 		, m_work(make_work_guard(m_io_context))
 #if TORRENT_USE_I2P
 		, m_i2p_conn(m_io_context)
@@ -518,17 +522,20 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 		, m_dht_announce_timer(m_io_context)
 #endif
 		, m_utp_socket_manager(
-			std::bind(&session_impl::send_udp_packet, this, _1, _2, _3, _4, _5)
-			, [this](socket_type s) { this->incoming_connection(std::move(s)); }
-			, m_io_context
-			, m_settings, m_stats_counters, nullptr)
+			  std::bind(&session_impl::send_udp_packet, this, _1, _2, _3, _4, _5),
+			  [this](socket_type s) { this->incoming_connection(std::move(s)); },
+			  m_io_context,
+			  m_settings,
+			  m_stats_counters,
+			  nullptr)
 #ifdef TORRENT_SSL_PEERS
 		, m_ssl_utp_socket_manager(
-			std::bind(&session_impl::send_udp_packet, this, _1, _2, _3, _4, _5)
-			, std::bind(&session_impl::on_incoming_utp_ssl, this, _1)
-			, m_io_context
-			, m_settings, m_stats_counters
-			, &m_peer_ssl_ctx)
+			  std::bind(&session_impl::send_udp_packet, this, _1, _2, _3, _4, _5),
+			  std::bind(&session_impl::on_incoming_utp_ssl, this, _1),
+			  m_io_context,
+			  m_settings,
+			  m_stats_counters,
+			  &m_peer_ssl_ctx)
 #endif
 		, m_timer(m_io_context)
 		, m_lsd_announce_timer(m_io_context)
@@ -1068,7 +1075,8 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 #endif
 
 #if TORRENT_USE_I2P
-		if (m_i2p_listen_socket && m_i2p_listen_socket->is_open())
+		// Cancel a pending SAM acceptor resolve/connect before TCP opens too.
+		if (m_i2p_listen_socket)
 		{
 			m_i2p_listen_socket->close(ec);
 			TORRENT_ASSERT(!ec);
@@ -2540,6 +2548,26 @@ retry:
 			if (should_log())
 				session_log("i2p SAM connection failure: %s", e.message().c_str());
 #endif
+			if (e == error_code(i2p_error::invalid_id, i2p_category()))
+			{
+				// The SAM session no longer exists. Defer disposal of the accept
+				// socket until its completion handler has returned.
+				std::weak_ptr<session_impl> self = shared_from_this();
+				post(m_io_context, [self] {
+					auto sp = self.lock();
+					if (!sp || sp->m_abort)
+						return;
+
+					error_code ignore;
+					if (sp->m_i2p_listen_socket)
+					{
+						sp->m_i2p_listen_socket->close(ignore);
+						sp->m_i2p_listen_socket.reset();
+					}
+					sp->m_i2p_conn.close(ignore);
+					sp->schedule_i2p_reconnect();
+				});
+			}
 			return;
 		}
 

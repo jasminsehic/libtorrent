@@ -54,6 +54,11 @@ jobs:
       - uses: bencherdev/bencher@v0.6.8
 
       - name: track benchmarks
+        # External Bencher credentials are not available in this fork.
+        # Skip uploading measurements without a key; still build benchmark tools.
+        if: env.BENCHER_API_KEY != ''
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
         run: |
           cd tools
           bencher run \
@@ -120,6 +125,11 @@ jobs:
       - uses: bencherdev/bencher@v0.6.8
 
       - name: track benchmarks
+        # External Bencher credentials are not available in this fork.
+        # Skip uploading measurements without a key; still build benchmark tools.
+        if: env.BENCHER_API_KEY != ''
+        env:
+          BENCHER_API_KEY: ${{ secrets.BENCHER_API_KEY }}
         run: |
           cd tools
           bencher run \

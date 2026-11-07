@@ -38,6 +38,7 @@ see LICENSE file.
 namespace rtc {
 	class PeerConnection;
 	class DataChannel;
+	struct Configuration;
 }
 
 namespace libtorrent {
@@ -75,8 +76,15 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 {
 	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
 	using rtc_stream_handler = std::function<void(rtc_stream_init)>;
+	using description_handler =
+		std::function<void(error_code const&, std::string const& description)>;
+	using rtc_configuration_hook =
+		std::function<void(rtc::Configuration&, description_handler const&)>;
 
-	explicit rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler);
+	explicit rtc_signaling(io_context& ioc,
+		torrent* t,
+		rtc_stream_handler handler,
+		rtc_configuration_hook configuration_hook = {});
 	~rtc_signaling();
 	rtc_signaling& operator=(rtc_signaling const&) = delete;
 	rtc_signaling(rtc_signaling const&) = delete;
@@ -96,8 +104,6 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 #endif
 
 private:
-	using description_handler = std::function<void(error_code const&, std::string const& description)>;
-
 	struct connection
 	{
 		explicit connection(io_context& ioc) : timer(ioc) {}
@@ -106,6 +112,7 @@ private:
 		std::shared_ptr<rtc::DataChannel> data_channel;
 		std::optional<peer_id> pid;
 		bool incoming = false;
+		description_handler description_completion;
 
 		deadline_timer timer;
 	};
@@ -119,7 +126,11 @@ private:
 
 	io_context& m_io_context;
 	torrent* m_torrent;
+	// All callbacks that access the torrent run on m_io_context. Once closed,
+	// queued RTC callbacks must not dereference the torrent or its session.
+	bool m_closed = false;
 	rtc_stream_handler m_rtc_stream_handler;
+	rtc_configuration_hook m_rtc_configuration_hook;
 
 	std::unordered_map<rtc_offer_id, connection, boost::hash<rtc_offer_id>> m_connections;
 	int m_num_incoming_connections = 0;

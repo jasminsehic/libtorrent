@@ -127,7 +127,8 @@ namespace {
 		SET(peer_fingerprint, "-LT2120-", nullptr),
 		SET(dht_bootstrap_nodes, "dht.libtorrent.org:25401", &session_impl::update_dht_bootstrap_nodes),
 		SET(natpmp_gateway, "", nullptr),
-		SET(webtorrent_stun_server, "stun.l.google.com:19302", nullptr)
+		SET(webtorrent_stun_server, "stun.l.google.com:19302", nullptr),
+		SET(webtorrent_turn_servers, "", nullptr)
 	}});
 
 	CONSTEXPR_SETTINGS
@@ -221,6 +222,7 @@ namespace {
 		SET(disk_disable_copy_on_write, false, nullptr),
 		SET(allow_multiple_connections_per_pid, false, nullptr),
 		SET(apply_filter_to_dht, true, nullptr),
+		SET(webtorrent_relay_only, false, nullptr),
 	}});
 
 	CONSTEXPR_SETTINGS
