@@ -359,12 +359,12 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 				, proxy.port, proxy.username, proxy.password);
 		else
 			config.proxyServer.emplace(rtc::ProxyServer::Type::Socks5, proxy.hostname, proxy.port);
-		config.proxyNumericOnly = proxy.proxy_hostnames;
+		config.proxyHostnames = proxy.proxy_hostnames;
 		config.enableIceTcp = false;
 		config.enableIceUdpMux = false;
 	}
 #ifndef TORRENT_DISABLE_LOGGING
-	m_torrent->session().session_log("RTC_PROXY_TRACE config transport=%s proxy_type=%d numeric_only=%d"
+	m_torrent->session().session_log("RTC_PROXY_TRACE config transport=%s proxy_type=%d proxy_hostnames=%d"
 		, proxy_peers ? "socks5" : "direct", int(proxy.type), int(proxy_peers && proxy.proxy_hostnames));
 #endif
 	std::string stun_server = m_torrent->settings().get_str(settings_pack::webtorrent_stun_server);
