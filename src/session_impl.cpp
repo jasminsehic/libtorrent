@@ -1587,6 +1587,32 @@ namespace {
 			, reopen_listen_port ? "true" : "false");
 #endif
 
+#if TORRENT_USE_RTC
+		bool const rtc_proxy_changed =
+			setting_changed<int>(pack, m_settings, settings_pack::proxy_type)
+			|| setting_changed<int>(pack, m_settings, settings_pack::proxy_port)
+			|| setting_changed<std::string>(pack, m_settings, settings_pack::proxy_hostname)
+			|| setting_changed<std::string>(pack, m_settings, settings_pack::proxy_username)
+			|| setting_changed<std::string>(pack, m_settings, settings_pack::proxy_password)
+			|| setting_changed<bool>(pack, m_settings, settings_pack::proxy_hostnames)
+			|| setting_changed<bool>(pack, m_settings, settings_pack::proxy_peer_connections)
+			|| setting_changed<bool>(pack, m_settings, settings_pack::proxy_tracker_connections)
+			|| setting_changed<std::string>(pack, m_settings, settings_pack::webtorrent_stun_server);
+		if (rtc_proxy_changed)
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			session_log("RTC_PROXY_TRACE resetting RTC connections for settings change");
+#endif
+			for (auto const& t : m_torrents)
+				t->reset_rtc_proxy();
+			for (auto i = m_connections.begin(); i != m_connections.end();)
+			{
+				auto p = *i++;
+				if (is_rtc(p->get_socket()))
+					p->disconnect(boost::asio::error::operation_aborted, operation_t::bittorrent);
+			}
+		}
+#endif
 		apply_pack(&pack, m_settings, this);
 
 #if !defined TORRENT_DISABLE_LOGGING || TORRENT_USE_ASSERTS
@@ -6538,6 +6564,9 @@ retry:
 
 	session_impl::~session_impl()
 	{
+#if TORRENT_USE_RTC
+		rtc_signaling::unset_log_session(this);
+#endif
 		// the network thread has exited by now, so this is the only thread
 		// touching session state. Registering it lets the single thread checks
 		// hold for everything destructed from here, including torrents kept

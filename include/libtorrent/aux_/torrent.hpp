@@ -834,6 +834,9 @@ namespace libtorrent::aux {
 		void post_file_status();
 
 		void update_auto_sequential();
+#if TORRENT_USE_RTC
+		void reset_rtc_proxy();
+#endif
 	private:
 #if TORRENT_USE_RTC
 		void generate_rtc_offers(int count

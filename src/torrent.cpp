@@ -6633,6 +6633,15 @@ namespace {
 	}
 
 #if TORRENT_USE_RTC
+	void torrent::reset_rtc_proxy()
+	{
+		if (auto signaling = std::move(m_rtc_signaling))
+		{
+			signaling->close();
+			signaling->cancel_offers();
+		}
+	}
+
 	void torrent::generate_rtc_offers(int const count
 		, std::function<void(error_code const&, std::vector<aux::rtc_offer>)> handler)
 	{
@@ -6669,7 +6678,6 @@ namespace {
 	{
 		if (!rtc_allowed())
 			return;
-		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_offer(offer);
 	}
 
@@ -6677,12 +6685,12 @@ namespace {
 	{
 		if (!rtc_allowed())
 			return;
-		TORRENT_ASSERT(m_rtc_signaling);
 		if(m_rtc_signaling) m_rtc_signaling->process_answer(answer);
 	}
 
 	void torrent::on_rtc_stream(aux::rtc_stream_init stream_init)
 	{
+		if (!rtc_allowed()) return;
 		aux::socket_type s(aux::rtc_stream(m_ses.get_context(), stream_init));
 
 		error_code ec;
