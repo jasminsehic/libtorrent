@@ -21,6 +21,10 @@ see LICENSE file.
 #include "libtorrent/aux_/rtc_signaling.hpp"
 #include "libtorrent/aux_/rtc_stream.hpp"
 #include "libtorrent/aux_/session_interface.hpp"
+#include "libtorrent/aux_/proxy_settings.hpp"
+#include "libtorrent/aux_/tracker_manager.hpp"
+
+#include <atomic>
 
 #include "libtorrent/aux_/disable_warnings_push.hpp"
 #include <rtc/rtc.hpp>
@@ -32,7 +36,11 @@ see LICENSE file.
 #include <mutex>
 
 // Enable this to pass libdatachannel log to the last created session
+#ifndef TORRENT_DISABLE_LOGGING
+#define DEBUG_RTC 1
+#else
 #define DEBUG_RTC 0
+#endif
 
 namespace libtorrent {
 namespace aux {
@@ -67,7 +75,7 @@ public:
 	void write(rtc::LogLevel level, rtc::string message)
 	{
 		std::lock_guard<std::mutex> l(m_mutex);
-		if (!m_ses) return;
+		if (!m_ses || message.find("RTC_PROXY_TRACE") == std::string::npos) return;
 
 		auto &alerts = m_ses->alerts();
 		if (!alerts.should_post<log_alert>()) return;
@@ -100,11 +108,10 @@ rtc_signaling::rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler han
 
 	static std::once_flag flag;
 #if DEBUG_RTC
-	std::call_once(flag, [this]() {
-		appender.set_session(&m_torrent->session());
-
+	appender.set_session(&m_torrent->session());
+	std::call_once(flag, []() {
 		using namespace std::placeholders;
-		rtc::InitLogger(rtc::LogLevel::Debug
+		rtc::InitLogger(rtc::LogLevel::Info
 				, std::bind(&rtc_log_appender::write, &appender, _1, _2));
 	});
 #else
@@ -118,8 +125,14 @@ rtc_signaling::~rtc_signaling()
 {
 	close();
 
+}
+
+void rtc_signaling::unset_log_session(aux::session_interface* ses)
+{
 #if DEBUG_RTC
-	appender.unset_session(&m_torrent->session());
+	appender.unset_session(ses);
+#else
+	TORRENT_UNUSED(ses);
 #endif
 }
 
@@ -130,8 +143,24 @@ alert_manager& rtc_signaling::alerts() const
 
 void rtc_signaling::close()
 {
+	for (auto& [id, conn] : m_connections)
+	{
+		TORRENT_UNUSED(id);
+		conn.peer_connection->close();
+	}
 	m_connections.clear();
 	m_num_incoming_connections = 0;
+}
+
+void rtc_signaling::cancel_offers()
+{
+	auto batches = std::move(m_offer_batches);
+	m_offer_batches = {};
+	while (!batches.empty())
+	{
+		batches.front().cancel();
+		batches.pop();
+	}
 }
 
 rtc_offer_id rtc_signaling::generate_offer_id() const
@@ -152,11 +181,11 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 		rtc_offer_id offer_id = generate_offer_id();
 		peer_id pid = m_torrent->pid();
 
-		auto& conn = create_connection(offer_id, [weak_this = weak_from_this(), offer_id, pid]
+		auto complete = [weak_this = weak_from_this(), offer_id, pid, done = std::make_shared<std::atomic<bool>>(false)]
 			(error_code const& ec, std::string sdp)
 		{
 			auto self = weak_this.lock();
-			if (!self) return;
+			if (!self || done->exchange(true)) return;
 
 			auto& io_context = self->m_io_context;
 			rtc_offer offer{std::move(offer_id), std::move(pid), std::move(sdp), {}};
@@ -165,8 +194,11 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 				, ec
 				, std::move(offer)
 			));
-		});
+		};
 
+		try
+		{
+		auto& conn = create_connection(offer_id, complete);
 		auto dc = conn.peer_connection->createDataChannel("webtorrent");
 		dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
 		{
@@ -186,6 +218,19 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 
 		// We need to maintain the DataChannel alive
 		conn.data_channel = std::move(dc);
+		}
+		catch (std::exception const&)
+		{
+			if (auto it = m_connections.find(offer_id); it != m_connections.end())
+			{
+				it->second.peer_connection->close();
+				m_connections.erase(it);
+			}
+#ifndef TORRENT_DISABLE_LOGGING
+			m_torrent->session().session_log("RTC_PROXY_TRACE offer setup failed");
+#endif
+			complete(boost::asio::error::connection_refused, "");
+		}
 	}
 }
 
@@ -213,6 +258,8 @@ void rtc_signaling::process_offer(rtc_offer const& offer)
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling processing remote offer");
 #endif
+	try
+	{
 	auto& conn = create_connection(offer.id, [weak_this = weak_from_this(), offer]
 		(error_code const& ec, std::string sdp)
 	{
@@ -233,8 +280,6 @@ void rtc_signaling::process_offer(rtc_offer const& offer)
 	conn.incoming = true;
 	++m_num_incoming_connections;
 
-	try
-	{
 		conn.peer_connection->setRemoteDescription({offer.sdp, "offer"});
 	}
 	catch (std::exception const& e)
@@ -303,6 +348,25 @@ rtc_signaling::connection& rtc_signaling::create_connection(rtc_offer_id const& 
 #endif
 
 	rtc::Configuration config;
+	auto const proxy = m_torrent->session().proxy();
+	bool const proxy_peers = proxy.proxy_peer_connections && proxy.type != settings_pack::none;
+	if (proxy_peers)
+	{
+		if (!webrtc_allowed(m_torrent->settings()))
+			throw std::runtime_error("Unsupported WebRTC proxy configuration");
+		if (proxy.type == settings_pack::socks5_pw)
+			config.proxyServer.emplace(rtc::ProxyServer::Type::Socks5, proxy.hostname
+				, proxy.port, proxy.username, proxy.password);
+		else
+			config.proxyServer.emplace(rtc::ProxyServer::Type::Socks5, proxy.hostname, proxy.port);
+		config.proxyNumericOnly = proxy.proxy_hostnames;
+		config.enableIceTcp = false;
+		config.enableIceUdpMux = false;
+	}
+#ifndef TORRENT_DISABLE_LOGGING
+	m_torrent->session().session_log("RTC_PROXY_TRACE config transport=%s proxy_type=%d numeric_only=%d"
+		, proxy_peers ? "socks5" : "direct", int(proxy.type), int(proxy_peers && proxy.proxy_hostnames));
+#endif
 	std::string stun_server = m_torrent->settings().get_str(settings_pack::webtorrent_stun_server);
 	if (!stun_server.empty())
 		config.iceServers.emplace_back(std::move(stun_server));
@@ -437,6 +501,7 @@ void rtc_signaling::on_data_channel(error_code const& ec
 
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC data channel open");
+	m_torrent->session().session_log("RTC_PROXY_TRACE data channel open");
 #endif
 
 	TORRENT_ASSERT(dc);
@@ -458,6 +523,12 @@ void rtc_signaling::offer_batch::add(error_code const& ec, rtc_offer offer)
 	// a partially failed batch still carries usable offers
 	if (is_complete())
 		m_handler(m_offers.empty() ? ec : error_code(), m_offers);
+}
+
+void rtc_signaling::offer_batch::cancel()
+{
+	if (!is_complete())
+		m_handler(boost::asio::error::operation_aborted, {});
 }
 
 bool rtc_signaling::offer_batch::is_complete() const

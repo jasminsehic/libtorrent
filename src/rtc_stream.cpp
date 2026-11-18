@@ -84,6 +84,8 @@ void rtc_stream_impl::close()
 {
 	if (m_data_channel && !m_data_channel->isClosed())
 		m_data_channel->close();
+	if (m_peer_connection)
+		m_peer_connection->close();
 
 	cancel_handlers(boost::asio::error::operation_aborted);
 }

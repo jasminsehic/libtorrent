@@ -48,6 +48,7 @@ struct torrent;
 namespace aux {
 
 struct rtc_stream_init;
+struct session_interface;
 
 constexpr int RTC_OFFER_ID_LEN = 20;
 constexpr std::size_t RTC_MAX_SDP_SIZE = 64 * 1024;
@@ -86,6 +87,8 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 	alert_manager& alerts() const;
 
 	void close();
+	void cancel_offers();
+	static void unset_log_session(session_interface* ses);
 	void generate_offers(int count, offers_handler handler);
 	void process_offer(rtc_offer const& offer);
 	void process_answer(rtc_answer const& answer);
@@ -131,6 +134,7 @@ private:
 
 		void add(error_code const& ec, rtc_offer offer);
 		bool is_complete() const;
+		void cancel();
 
 	private:
 		int m_count;
