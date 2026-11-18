@@ -80,7 +80,6 @@ public:
 		auto &alerts = m_ses->alerts();
 		if (!alerts.should_post<log_alert>()) return;
 
-		using ::operator<<;
 		std::ostringstream ss;
 		ss << "libdatachannel: ";
 		ss << level  << " " << message;
