@@ -59,8 +59,17 @@ bool is_websocket_tracker_url(string_view const url)
 
 bool webrtc_allowed(session_settings const& sett)
 {
-	return sett.get_int(settings_pack::proxy_type) == settings_pack::none
-		|| !sett.get_bool(settings_pack::proxy_peer_connections);
+	auto const type = sett.get_int(settings_pack::proxy_type);
+	if (type == settings_pack::none || !sett.get_bool(settings_pack::proxy_peer_connections))
+		return true;
+
+	return (type == settings_pack::socks5 || type == settings_pack::socks5_pw)
+		&& !sett.get_str(settings_pack::proxy_hostname).empty()
+		&& sett.get_int(settings_pack::proxy_port) > 0
+		&& sett.get_int(settings_pack::proxy_port) <= 65535
+		&& (type != settings_pack::socks5_pw
+			|| (!sett.get_str(settings_pack::proxy_username).empty()
+				&& !sett.get_str(settings_pack::proxy_password).empty()));
 }
 #endif
 
@@ -409,7 +418,8 @@ void timeout_handler::set_timeout(int completion_timeout, int read_timeout)
 
 					// the torrent refused to create RTC peers, connecting to the
 					// tracker anyway would bypass that policy
-					if (ec == boost::asio::error::operation_not_supported)
+					if (ec == boost::asio::error::operation_not_supported
+						|| ec == boost::asio::error::operation_aborted)
 						return fail(ec);
 
 					// peer proxying may have been enabled while the offers were generated

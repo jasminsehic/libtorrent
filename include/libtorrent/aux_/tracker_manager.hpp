@@ -81,8 +81,7 @@ namespace libtorrent::aux {
 #if TORRENT_USE_RTC
 	TORRENT_EXTRA_EXPORT bool is_websocket_tracker_url(string_view url);
 
-	// WebRTC peers cannot use the configured proxy. WebSocket trackers may
-	// use the tracker proxy independently when peer proxying is disabled.
+	// WebRTC peers support SOCKS5 UDP proxying. Tracker proxying is independent.
 	TORRENT_EXTRA_EXPORT bool webrtc_allowed(session_settings const& sett);
 #endif
 

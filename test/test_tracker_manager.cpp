@@ -236,6 +236,9 @@ TORRENT_TEST(webrtc_allowed)
 
 	sett.set_int(settings_pack::proxy_type, settings_pack::socks5);
 	TEST_CHECK(!webrtc_allowed(sett));
+	sett.set_str(settings_pack::proxy_hostname, "127.0.0.1");
+	sett.set_int(settings_pack::proxy_port, 1080);
+	TEST_CHECK(webrtc_allowed(sett));
 
 	sett.set_int(settings_pack::proxy_type, settings_pack::http);
 	TEST_CHECK(!webrtc_allowed(sett));
@@ -259,7 +262,7 @@ TORRENT_TEST(websocket_tracker_refused_with_proxy)
 {
 	io_context ios;
 	aux::session_settings sett;
-	sett.set_int(settings_pack::proxy_type, settings_pack::socks5);
+	sett.set_int(settings_pack::proxy_type, settings_pack::http);
 	sett.set_str(settings_pack::proxy_hostname, "127.0.0.1");
 	sett.set_int(settings_pack::proxy_port, 1);
 
@@ -342,7 +345,7 @@ TORRENT_TEST(websocket_tracker_proxy_enabled_during_offers)
 	TEST_EQUAL(cb->num_offer_requests, 1);
 	TEST_CHECK(cb->pending_offers);
 
-	sett.set_int(settings_pack::proxy_type, settings_pack::socks5);
+	sett.set_int(settings_pack::proxy_type, settings_pack::http);
 	sett.set_str(settings_pack::proxy_hostname, "127.0.0.1");
 	sett.set_int(settings_pack::proxy_port, 1);
 	cb->pending_offers(error_code(), {});
