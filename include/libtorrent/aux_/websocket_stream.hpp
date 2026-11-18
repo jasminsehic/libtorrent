@@ -159,6 +159,8 @@ namespace libtorrent::aux {
 
 namespace websocket = boost::beast::websocket;
 
+struct session_logger;
+
 struct TORRENT_EXTRA_EXPORT websocket_stream
 	: std::enable_shared_from_this<websocket_stream>
 {
@@ -184,6 +186,9 @@ struct TORRENT_EXTRA_EXPORT websocket_stream
 	bool is_connecting() const { return bool(m_connect_handler); }
 
 	void set_user_agent(std::string user_agent);
+#ifndef TORRENT_DISABLE_LOGGING
+	void set_logger(session_logger& logger) { m_logger = &logger; }
+#endif
 
 	template <class Handler>
 	void async_connect(const std::string &url, Handler&& handler)
@@ -266,6 +271,9 @@ private:
 	resolver_interface& m_resolver;
 	ssl::context* m_ssl_context;
 	proxy_settings m_proxy;
+#ifndef TORRENT_DISABLE_LOGGING
+	session_logger* m_logger = nullptr;
+#endif
 
 	using stream_type = websocket::stream<websocket_socket_type>;
 	std::optional<stream_type> m_stream;

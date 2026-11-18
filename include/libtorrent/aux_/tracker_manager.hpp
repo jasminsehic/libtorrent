@@ -393,6 +393,9 @@ namespace libtorrent::aux {
 
 		aux::session_settings const& settings() const { return m_settings; }
 		aux::resolver_interface& host_resolver() { return m_host_resolver; }
+#ifndef TORRENT_DISABLE_LOGGING
+		aux::session_logger& logger() { return m_ses; }
+#endif
 
 		void send_hostname(aux::listen_socket_handle const& sock
 			, char const* hostname, int port, span<char const> p
