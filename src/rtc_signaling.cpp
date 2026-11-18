@@ -146,6 +146,7 @@ void rtc_signaling::close()
 	for (auto& [id, conn] : m_connections)
 	{
 		TORRENT_UNUSED(id);
+		conn.peer_connection->stopIceDatagrams();
 		conn.peer_connection->close();
 	}
 	m_connections.clear();
@@ -198,26 +199,26 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 
 		try
 		{
-		auto& conn = create_connection(offer_id, complete);
-		auto dc = conn.peer_connection->createDataChannel("webtorrent");
-		dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
-		{
-			// Warning: this is called from another thread
-			auto self = weak_this.lock();
-			auto dc_ = weak_dc.lock();
-			if (!self || !dc_) return;
+			auto& conn = create_connection(offer_id, complete);
+			auto dc = conn.peer_connection->createDataChannel("webtorrent");
+			dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]()
+			{
+				// Warning: this is called from another thread
+				auto self = weak_this.lock();
+				auto dc_ = weak_dc.lock();
+				if (!self || !dc_) return;
 
-			auto& io_context = self->m_io_context;
-			post(io_context, std::bind(&rtc_signaling::on_data_channel
-				, std::move(self)
-				, error_code{}
-				, std::move(offer_id)
-				, std::move(dc_)
-			));
-		});
+				auto& io_context = self->m_io_context;
+				post(io_context, std::bind(&rtc_signaling::on_data_channel
+					, std::move(self)
+					, error_code{}
+					, std::move(offer_id)
+					, std::move(dc_)
+				));
+			});
 
-		// We need to maintain the DataChannel alive
-		conn.data_channel = std::move(dc);
+			// We need to maintain the DataChannel alive
+			conn.data_channel = std::move(dc);
 		}
 		catch (std::exception const&)
 		{
@@ -260,25 +261,25 @@ void rtc_signaling::process_offer(rtc_offer const& offer)
 #endif
 	try
 	{
-	auto& conn = create_connection(offer.id, [weak_this = weak_from_this(), offer]
-		(error_code const& ec, std::string sdp)
-	{
-		auto self = weak_this.lock();
-		if (!self) return;
+		auto& conn = create_connection(offer.id, [weak_this = weak_from_this(), offer]
+			(error_code const& ec, std::string sdp)
+		{
+			auto self = weak_this.lock();
+			if (!self) return;
 
-		rtc_answer answer{offer.id, offer.pid, std::move(sdp)};
-		auto& io_context = self->m_io_context;
-		post(io_context, std::bind(&rtc_signaling::on_generated_answer
-			, std::move(self)
-			, ec
-			, std::move(answer)
-			, std::move(offer)
-		));
-	});
+			rtc_answer answer{offer.id, offer.pid, std::move(sdp)};
+			auto& io_context = self->m_io_context;
+			post(io_context, std::bind(&rtc_signaling::on_generated_answer
+				, std::move(self)
+				, ec
+				, std::move(answer)
+				, std::move(offer)
+			));
+		});
 
-	conn.pid = offer.pid;
-	conn.incoming = true;
-	++m_num_incoming_connections;
+		conn.pid = offer.pid;
+		conn.incoming = true;
+		++m_num_incoming_connections;
 
 		conn.peer_connection->setRemoteDescription({offer.sdp, "offer"});
 	}
