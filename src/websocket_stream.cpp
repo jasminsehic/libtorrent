@@ -22,6 +22,8 @@ see LICENSE file.
 #include "libtorrent/aux_/instantiate_connection.hpp"
 #include "libtorrent/aux_/socket_type.hpp"
 #include "libtorrent/aux_/ip_helpers.hpp"
+#include "libtorrent/aux_/session_interface.hpp"
+#include "libtorrent/aux_/socket_io.hpp"
 #include "libtorrent/aux_/random.hpp"
 #include "libtorrent/aux_/string_util.hpp" // for is_i2p_url
 #include "libtorrent/error_code.hpp"
@@ -303,6 +305,22 @@ void websocket_stream::connect_endpoint()
 		return;
 	}
 
+#ifndef TORRENT_DISABLE_LOGGING
+	if (m_logger && m_logger->should_log())
+	{
+		bool const direct = std::holds_alternative<tcp::socket>(transport.var())
+#if TORRENT_USE_SSL
+			|| std::holds_alternative<ssl_stream<tcp::socket>>(transport.var())
+#endif
+			;
+		m_logger->session_log("WS_PROXY_TRACE attempt id=%p scheme=%s tracker=%s:%u "
+			"requested=%s transport=%s proxy_type=%d proxy=%s:%d remote_dns=%d endpoint=%s",
+			static_cast<void*>(this), ssl_context ? "wss" : "ws", m_hostname.c_str(), unsigned(m_port),
+			use_proxy ? "proxy" : "direct", direct ? "direct" : "proxy", int(proxy.type),
+			proxy.hostname.c_str(), proxy.port, int(m_remote_dns),
+			print_endpoint(m_endpoints[m_endpoint_index]).c_str());
+	}
+#endif
 	ADD_OUTSTANDING_ASYNC("websocket_stream::on_tcp_connect");
 	m_stream->next_layer().async_connect(m_endpoints[m_endpoint_index],
 		std::bind(&websocket_stream::on_tcp_connect, shared_from_this(), _1));
@@ -310,6 +328,11 @@ void websocket_stream::connect_endpoint()
 
 void websocket_stream::terminate_socket()
 {
+#ifndef TORRENT_DISABLE_LOGGING
+	if (m_logger && m_logger->should_log())
+		m_logger->session_log("WS_PROXY_TRACE terminate id=%p tracker=%s:%u",
+			static_cast<void*>(this), m_hostname.c_str(), unsigned(m_port));
+#endif
 	error_code ignore;
 	m_stream->next_layer().close(ignore);
 }
@@ -317,6 +340,17 @@ void websocket_stream::terminate_socket()
 void websocket_stream::on_tcp_connect(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_tcp_connect");
+#ifndef TORRENT_DISABLE_LOGGING
+	if (m_logger && m_logger->should_log())
+	{
+		error_code peer_ec;
+		auto const peer = m_stream->next_layer().lowest_layer().remote_endpoint(peer_ec);
+		m_logger->session_log("WS_PROXY_TRACE transport_result id=%p tracker=%s:%u result=%d "
+			"tcp_remote=%s endpoint_error=%d cancelled=%d",
+			static_cast<void*>(this), m_hostname.c_str(), unsigned(m_port), ec.value(),
+			peer_ec ? "-" : print_endpoint(peer).c_str(), peer_ec.value(), int(!m_connect_handler));
+	}
+#endif
 
 	// close() clears m_connect_handler. Don't retry or start the WebSocket
 	// handshake after the caller has cancelled connection establishment.
@@ -380,6 +414,11 @@ void websocket_stream::do_handshake()
 void websocket_stream::on_handshake(error_code const& ec)
 {
 	COMPLETE_ASYNC("websocket_stream::on_handshake");
+#ifndef TORRENT_DISABLE_LOGGING
+	if (m_logger && m_logger->should_log())
+		m_logger->session_log("WS_PROXY_TRACE handshake id=%p tracker=%s:%u result=%d",
+			static_cast<void*>(this), m_hostname.c_str(), unsigned(m_port), ec.value());
+#endif
 	auto handler = std::exchange(m_connect_handler, nullptr);
 	if (ec)
 	{
