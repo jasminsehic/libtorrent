@@ -110,6 +110,9 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 #endif
 
 private:
+	using description_handler =
+		std::function<void(error_code const&, std::string const& description)>;
+
 	struct connection
 	{
 		explicit connection(io_context& ioc) : timer(ioc) {}
