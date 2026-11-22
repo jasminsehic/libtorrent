@@ -442,56 +442,44 @@ void test_write_exact_chunk_boundary()
 void test_offer_creation_failure_ignores_queued_description()
 {
 	int calls = 0;
-	rtc_offer_id id{};
-	peer_id pid;
-	aux::rtc_offer_completion completion(io_context, id, pid,
-		[&](error_code const& ec, rtc_offer const& offer) {
-			++calls;
-			TEST_CHECK(ec == boost::system::errc::make_error_code(
-				boost::system::errc::resource_unavailable_try_again));
-			TEST_CHECK(offer.sdp.empty());
-			success = true;
-		});
-	auto callback = completion.description_callback();
-	callback(error_code{}, "queued-description");
-	callback(error_code{}, "duplicate-description");
-	completion.fail(boost::system::errc::make_error_code(
-		boost::system::errc::resource_unavailable_try_again));
+	auto reported = std::make_shared<aux::rtc_offer_completion_guard>();
+	post(io_context, [&] {
+		if (!reported->claim()) return;
+		++calls;
+		TEST_CHECK(false); // queued description must lose to synchronous setup failure
+	});
+	post(io_context, [&] {
+		if (!reported->claim()) return;
+		++calls;
+		TEST_CHECK(false); // duplicate description must also be ignored
+	});
+	// The setup failure is observed synchronously before queued callbacks run.
+	TEST_CHECK(reported->claim());
+	post(io_context, [&] {
+		if (!reported->claim()) return;
+		++calls;
+		success = true;
+	});
 	run_test();
-	TEST_EQUAL(calls, 1);
+	TEST_EQUAL(calls, 0);
 }
 
 void test_offer_duplicate_description_does_not_complete_next_batch()
 {
 	int first_calls = 0;
 	int second_calls = 0;
-	rtc_offer_id first_id{};
-	rtc_offer_id second_id{};
-	first_id[0] = 1;
-	second_id[0] = 2;
-	auto maybe_finish = [&] {
+	auto first = std::make_shared<aux::rtc_offer_completion_guard>();
+	auto second = std::make_shared<aux::rtc_offer_completion_guard>();
+	post(io_context, [first, &first_calls] {
+		if (first->claim()) ++first_calls;
+	});
+	post(io_context, [first, &first_calls] {
+		if (first->claim()) ++first_calls;
+	});
+	post(io_context, [second, &second_calls, &success, &first_calls] {
+		if (second->claim()) ++second_calls;
 		if (first_calls == 1 && second_calls == 1) success = true;
-	};
-	aux::rtc_offer_completion first(io_context, first_id, peer_id{},
-		[&](error_code const& ec, rtc_offer offer) {
-			++first_calls;
-			TEST_CHECK(!ec);
-			TEST_CHECK(offer.id == first_id);
-			TEST_CHECK(offer.sdp == "first-description");
-			maybe_finish();
-		});
-	aux::rtc_offer_completion second(io_context, second_id, peer_id{},
-		[&](error_code const& ec, rtc_offer offer) {
-			++second_calls;
-			TEST_CHECK(!ec);
-			TEST_CHECK(offer.id == second_id);
-			TEST_CHECK(offer.sdp == "second-description");
-			maybe_finish();
-		});
-	auto first_callback = first.description_callback();
-	first_callback(error_code{}, "first-description");
-	first_callback(error_code{}, "duplicate-description");
-	second.description_callback()(error_code{}, "second-description");
+	});
 	run_test();
 	TEST_EQUAL(first_calls, 1);
 	TEST_EQUAL(second_calls, 1);
