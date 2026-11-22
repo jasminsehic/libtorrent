@@ -141,39 +141,6 @@ rtc_offer_id rtc_signaling::generate_offer_id() const
 	return id;
 }
 
-rtc_offer_completion::rtc_offer_completion(io_context& ioc, rtc_offer_id id, peer_id pid
-	, completion_handler handler)
-	: m_io_context(ioc)
-	, m_id(std::move(id))
-	, m_pid(std::move(pid))
-	, m_handler(std::move(handler))
-	, m_reported(std::make_shared<bool>(false))
-{}
-
-rtc_offer_completion::description_handler rtc_offer_completion::description_callback() const
-{
-	return [ioc = &m_io_context, id = m_id, pid = m_pid, handler = m_handler
-		, reported = m_reported](error_code const& ec, std::string const& sdp) {
-		post(*ioc, [id, pid, handler, reported, ec, description = std::string(sdp)]() mutable {
-			if (std::exchange(*reported, true)) return;
-			handler(ec, rtc_offer{id, pid, std::move(description), {}});
-		});
-	};
-}
-
-void rtc_offer_completion::fail(error_code ec)
-{
-	// Called on the network thread. Mark it before posting so an already queued
-	// description callback cannot turn a failed setup into a successful offer.
-	*m_reported = true;
-	auto handler = m_handler;
-	auto id = m_id;
-	auto pid = m_pid;
-	post(m_io_context, [handler = std::move(handler), id, pid, ec]() mutable {
-		handler(ec, rtc_offer{id, pid, {}, {}});
-	});
-}
-
 void rtc_signaling::generate_offers(int count, offers_handler handler)
 {
 #ifndef TORRENT_DISABLE_LOGGING
@@ -185,12 +152,23 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 		rtc_offer_id offer_id = generate_offer_id();
 		peer_id pid = m_torrent->pid();
 
-		rtc_offer_completion completion(m_io_context, offer_id, pid,
-			[weak_this = weak_from_this()](error_code const& ec, rtc_offer offer) {
-				auto self = weak_this.lock();
-				if (!self) return;
-				self->on_generated_offer(ec, std::move(offer));
-			});
+		std::shared_ptr<rtc_offer_completion_guard> reported;
+		try
+		{
+			reported = std::make_shared<rtc_offer_completion_guard>();
+			description_handler const on_description =
+				[weak_this = weak_from_this(), offer_id, pid, reported](
+					error_code const& ec, std::string const& sdp) {
+					auto self = weak_this.lock();
+					if (!self) return;
+					auto& io_context = self->m_io_context;
+					post(io_context, [signaling = std::move(self), reported, offer_id, pid, ec
+						, description = std::string(sdp)]() mutable {
+						if (!reported->claim()) return;
+						signaling->on_generated_offer(ec,
+							rtc_offer{offer_id, pid, std::move(description), {}});
+					});
+				};
 		try
 		{
 			auto& conn = create_connection(offer_id, completion.description_callback());
@@ -213,7 +191,12 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 			debug_log("*** RTC signaling could not create offer: %s", e.what());
 #endif
 			m_connections.erase(offer_id);
-			completion.fail(errc::make_error_code(errc::resource_unavailable_try_again));
+			if (reported) reported->claim();
+			post(m_io_context, [self = shared_from_this(), offer_id, pid] {
+				self->on_generated_offer(
+					errc::make_error_code(errc::resource_unavailable_try_again),
+					rtc_offer{offer_id, pid, {}, {}});
+			});
 		}
 	}
 }
