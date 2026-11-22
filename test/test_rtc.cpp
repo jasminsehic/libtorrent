@@ -442,44 +442,69 @@ void test_write_exact_chunk_boundary()
 void test_offer_setup_failure_wins_over_queued_description()
 {
 	int calls = 0;
-	auto reported = std::make_shared<aux::rtc_offer_completion_guard>();
-	post(io_context, [&] {
-		if (!reported->claim()) return;
+	aux::rtc_offer_batch_queue batches;
+	batches.emplace(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
 		++calls;
-		TEST_CHECK(false); // queued description must lose to synchronous setup failure
-	});
-	post(io_context, [&] {
-		if (!reported->claim()) return;
-		++calls;
-		TEST_CHECK(false); // duplicate description must also be ignored
-	});
-	// The setup failure is observed synchronously before queued callbacks run.
-	TEST_CHECK(reported->claim());
-	post(io_context, [&] {
-		// The failure path has already claimed the offer before posting this.
-		++calls;
+		TEST_EQUAL(ec, boost::system::errc::make_error_code(
+			boost::system::errc::resource_unavailable_try_again));
+		TEST_CHECK(offers.empty());
 		success = true;
+	});
+
+	auto reported = std::make_shared<aux::rtc_offer_completion_guard>();
+	post(io_context, [reported, &batches] {
+		if (!reported->claim()) return;
+		batches.add(error_code{}, rtc_offer{{}, {}, "queued-description", {}});
+	});
+	post(io_context, [reported, &batches] {
+		if (!reported->claim()) return;
+		batches.add(error_code{}, rtc_offer{{}, {}, "duplicate-description", {}});
+	});
+
+	// Match generate_offers(): claim synchronously, then post the setup error.
+	TEST_CHECK(reported->claim());
+	post(io_context, [&batches] {
+		batches.add(boost::system::errc::make_error_code(
+			boost::system::errc::resource_unavailable_try_again), rtc_offer{});
 	});
 	run_test();
 	TEST_EQUAL(calls, 1);
 }
 
-void test_offer_duplicate_description_is_ignored_per_offer()
+void test_offer_duplicate_description_does_not_complete_next_batch()
 {
 	int first_calls = 0;
 	int second_calls = 0;
+	aux::rtc_offer_batch_queue batches;
+	batches.emplace(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++first_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		if (!offers.empty()) TEST_EQUAL(offers[0].sdp, "first-description");
+	});
+	batches.emplace(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
+		++second_calls;
+		TEST_CHECK(!ec);
+		TEST_EQUAL(int(offers.size()), 1);
+		if (!offers.empty()) TEST_EQUAL(offers[0].sdp, "second-description");
+		if (first_calls == 1 && second_calls == 1) success = true;
+	});
+
 	auto first = std::make_shared<aux::rtc_offer_completion_guard>();
 	auto second = std::make_shared<aux::rtc_offer_completion_guard>();
-	post(io_context, [first, &first_calls] {
-		if (first->claim()) ++first_calls;
+	post(io_context, [first, &batches] {
+		if (!first->claim()) return;
+		batches.add(error_code{}, rtc_offer{{}, {}, "first-description", {}});
 	});
-	post(io_context, [first, &first_calls] {
-		if (first->claim()) ++first_calls;
+	post(io_context, [first, &batches] {
+		if (!first->claim()) return;
+		batches.add(error_code{}, rtc_offer{{}, {}, "duplicate-description", {}});
 	});
-	post(io_context, [second, &second_calls, &success, &first_calls] {
-		if (second->claim()) ++second_calls;
-		if (second_calls == 1) success = true;
+	post(io_context, [second, &batches] {
+		if (!second->claim()) return;
+		batches.add(error_code{}, rtc_offer{{}, {}, "second-description", {}});
 	});
+
 	run_test();
 	TEST_EQUAL(first_calls, 1);
 	TEST_EQUAL(second_calls, 1);
@@ -494,9 +519,9 @@ TORRENT_TEST(signaling_stream) { test_stream(); }
 TORRENT_TEST(write_exact_chunk_boundary) { test_write_exact_chunk_boundary(); }
 TORRENT_TEST(signaling_offer_setup_failure_wins_over_queued_description)
 {
-	test_offer_creation_failure_ignores_queued_description();
+	test_offer_setup_failure_wins_over_queued_description();
 }
-TORRENT_TEST(signaling_offer_duplicate_description_is_ignored_per_offer)
+TORRENT_TEST(signaling_offer_duplicate_description_does_not_complete_next_batch)
 {
 	test_offer_duplicate_description_does_not_complete_next_batch();
 }
