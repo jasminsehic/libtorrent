@@ -151,7 +151,6 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 	{
 		rtc_offer_id offer_id = generate_offer_id();
 		peer_id pid = m_torrent->pid();
-
 		std::shared_ptr<rtc_offer_completion_guard> reported;
 		try
 		{
@@ -169,9 +168,8 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 							rtc_offer{offer_id, pid, std::move(description), {}});
 					});
 				};
-		try
-		{
-			auto& conn = create_connection(offer_id, completion.description_callback());
+
+			auto& conn = create_connection(offer_id, on_description);
 			auto dc = conn.peer_connection->createDataChannel("webtorrent");
 			dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]() {
 				// Warning: this is called from another thread
