@@ -191,9 +191,9 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 				if (!self) return;
 				self->on_generated_offer(ec, std::move(offer));
 			});
-		auto& conn = create_connection(offer_id, completion.description_callback());
 		try
 		{
+			auto& conn = create_connection(offer_id, completion.description_callback());
 			auto dc = conn.peer_connection->createDataChannel("webtorrent");
 			dc->onOpen([weak_this = weak_from_this(), offer_id, weak_dc = make_weak_ptr(dc)]() {
 				// Warning: this is called from another thread
