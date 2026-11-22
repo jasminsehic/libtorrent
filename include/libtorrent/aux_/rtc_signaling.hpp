@@ -56,6 +56,22 @@ constexpr std::size_t RTC_MAX_MESSAGE_SIZE = 2 * RTC_MAX_SDP_SIZE;
 using rtc_offer_id = std::array<char, RTC_OFFER_ID_LEN>;
 
 
+struct rtc_answer
+{
+	rtc_offer_id offer_id;
+	peer_id pid;
+	std::string sdp; // session description in SDP format
+};
+
+struct rtc_offer
+{
+	rtc_offer_id id;
+	peer_id pid;
+	std::string sdp; // session description in SDP format
+	std::function<void(peer_id const& pid, rtc_answer const& answer)> answer_callback;
+};
+
+
 // Coordinates the potentially competing description callback and synchronous
 // offer-setup failure. All completion decisions are made on the network thread.
 struct rtc_offer_completion
@@ -76,22 +92,6 @@ private:
 	completion_handler m_handler;
 	std::shared_ptr<bool> m_reported;
 };
-
-struct rtc_answer
-{
-	rtc_offer_id offer_id;
-	peer_id pid;
-	std::string sdp; // session description in SDP format
-};
-
-struct rtc_offer
-{
-	rtc_offer_id id;
-	peer_id pid;
-	std::string sdp; // session description in SDP format
-	std::function<void(peer_id const& pid, rtc_answer const& answer)> answer_callback;
-};
-
 // This class handles client signaling for WebRTC DataChannels
 struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<rtc_signaling>
 {
