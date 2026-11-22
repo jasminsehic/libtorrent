@@ -500,15 +500,18 @@ void test_offer_duplicate_description_does_not_complete_next_batch()
 	auto first = std::make_shared<aux::rtc_offer_completion_guard>();
 	auto second = std::make_shared<aux::rtc_offer_completion_guard>();
 	post(io_context, [first, &batches] {
-		if (!first->claim()) return;
+		if (!first->claim())
+			return;
 		batches.add(error_code{}, rtc_offer{{}, {}, "first-description", {}});
 	});
 	post(io_context, [first, &batches] {
-		if (!first->claim()) return;
+		if (!first->claim())
+			return;
 		batches.add(error_code{}, rtc_offer{{}, {}, "duplicate-description", {}});
 	});
 	post(io_context, [second, &batches] {
-		if (!second->claim()) return;
+		if (!second->claim())
+			return;
 		batches.add(error_code{}, rtc_offer{{}, {}, "second-description", {}});
 	});
 
