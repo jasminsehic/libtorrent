@@ -195,7 +195,7 @@ private:
 	int m_num_incoming_connections = 0;
 	std::queue<rtc_offer_id> m_queue;
 
-	std::queue<offer_batch> m_offer_batches;
+	rtc_offer_batch_queue m_offer_batches;
 };
 
 }
