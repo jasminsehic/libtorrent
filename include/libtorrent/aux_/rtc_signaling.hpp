@@ -76,7 +76,8 @@ struct rtc_offer_completion_guard
 {
 	bool claim() noexcept
 	{
-		if (m_reported) return false;
+		if (m_reported)
+			return false;
 		m_reported = true;
 		return true;
 	}
@@ -94,22 +95,22 @@ struct rtc_offer_batch
 		: m_count(count)
 		, m_handler(std::move(handler))
 	{
-		if (m_count == 0) m_handler(error_code{}, {});
+		if (m_count == 0)
+			m_handler(error_code{}, {});
 	}
 
 	void add(error_code const& ec, rtc_offer offer)
 	{
-		if (!ec) m_offers.push_back(std::move(offer));
-		else --m_count;
+		if (!ec)
+			m_offers.push_back(std::move(offer));
+		else
+			--m_count;
 
 		if (is_complete())
 			m_handler(m_offers.empty() ? ec : error_code(), m_offers);
 	}
 
-	bool is_complete() const
-	{
-		return int(m_offers.size()) == m_count;
-	}
+	bool is_complete() const { return int(m_offers.size()) == m_count; }
 
 private:
 	int m_count;
