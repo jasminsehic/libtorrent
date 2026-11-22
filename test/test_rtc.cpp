@@ -478,7 +478,7 @@ void test_offer_duplicate_description_is_ignored_per_offer()
 	});
 	post(io_context, [second, &second_calls, &success, &first_calls] {
 		if (second->claim()) ++second_calls;
-		if (first_calls == 1 && second_calls == 1) success = true;
+		if (second_calls == 1) success = true;
 	});
 	run_test();
 	TEST_EQUAL(first_calls, 1);
