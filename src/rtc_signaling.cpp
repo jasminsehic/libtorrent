@@ -397,11 +397,7 @@ void rtc_signaling::on_generated_offer(error_code const& ec, rtc_offer offer)
 #ifndef TORRENT_DISABLE_LOGGING
 	debug_log("*** RTC signaling generated offer");
 #endif
-	while (!m_offer_batches.empty() && m_offer_batches.front().is_complete())
-		m_offer_batches.pop();
-
-	if (!m_offer_batches.empty())
-		m_offer_batches.front().add(ec, std::forward<rtc_offer>(offer));
+	m_offer_batches.add(ec, std::move(offer));
 }
 
 void rtc_signaling::on_generated_answer(error_code const& ec, rtc_answer answer, rtc_offer offer)
@@ -451,28 +447,6 @@ void rtc_signaling::on_data_channel(error_code const& ec
 
 	TORRENT_ASSERT(dc);
 	m_rtc_stream_handler(rtc_stream_init{conn.peer_connection, dc});
-}
-
-rtc_signaling::offer_batch::offer_batch(int count, rtc_signaling::offers_handler handler)
-	: m_count(count)
-	, m_handler(std::move(handler))
-{
-	if (m_count == 0) m_handler(error_code{}, {});
-}
-
-void rtc_signaling::offer_batch::add(error_code const& ec, rtc_offer offer)
-{
-	if (!ec) m_offers.push_back(std::move(offer));
-	else --m_count;
-
-	// a partially failed batch still carries usable offers
-	if (is_complete())
-		m_handler(m_offers.empty() ? ec : error_code(), m_offers);
-}
-
-bool rtc_signaling::offer_batch::is_complete() const
-{
-	return int(m_offers.size()) == m_count;
 }
 
 #ifndef TORRENT_DISABLE_LOGGING
