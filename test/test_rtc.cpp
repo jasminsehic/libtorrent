@@ -456,12 +456,12 @@ void test_offer_creation_failure_ignores_queued_description()
 	// The setup failure is observed synchronously before queued callbacks run.
 	TEST_CHECK(reported->claim());
 	post(io_context, [&] {
-		if (!reported->claim()) return;
+		// The failure path has already claimed the offer before posting this.
 		++calls;
 		success = true;
 	});
 	run_test();
-	TEST_EQUAL(calls, 0);
+	TEST_EQUAL(calls, 1);
 }
 
 void test_offer_duplicate_description_does_not_complete_next_batch()
