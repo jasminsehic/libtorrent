@@ -86,6 +86,60 @@ private:
 	bool m_reported = false;
 };
 
+/* Shared offer-batch accumulator used by rtc_signaling and its regression tests. */
+struct rtc_offer_batch
+{
+	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
+
+	rtc_offer_batch(int count, offers_handler handler)
+		: m_count(count)
+		, m_handler(std::move(handler))
+	{
+		if (m_count == 0) m_handler(error_code{}, {});
+	}
+
+	void add(error_code const& ec, rtc_offer offer)
+	{
+		if (!ec) m_offers.push_back(std::move(offer));
+		else --m_count;
+
+		if (is_complete())
+			m_handler(m_offers.empty() ? ec : error_code(), m_offers);
+	}
+
+	bool is_complete() const
+	{
+		return int(m_offers.size()) == m_count;
+	}
+
+private:
+	int m_count;
+	offers_handler m_handler;
+	std::vector<rtc_offer> m_offers;
+};
+
+struct rtc_offer_batch_queue
+{
+	using offers_handler = rtc_offer_batch::offers_handler;
+
+	void emplace(int count, offers_handler handler)
+	{
+		m_batches.emplace(count, std::move(handler));
+	}
+
+	void add(error_code const& ec, rtc_offer offer)
+	{
+		while (!m_batches.empty() && m_batches.front().is_complete())
+			m_batches.pop();
+
+		if (!m_batches.empty())
+			m_batches.front().add(ec, std::move(offer));
+	}
+
+private:
+	std::queue<rtc_offer_batch> m_batches;
+};
+
 // This class handles client signaling for WebRTC DataChannels
 struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<rtc_signaling>
 {
@@ -140,19 +194,6 @@ private:
 	std::unordered_map<rtc_offer_id, connection, boost::hash<rtc_offer_id>> m_connections;
 	int m_num_incoming_connections = 0;
 	std::queue<rtc_offer_id> m_queue;
-
-	struct offer_batch
-	{
-		offer_batch(int count, offers_handler handler);
-
-		void add(error_code const& ec, rtc_offer offer);
-		bool is_complete() const;
-
-	private:
-		int m_count;
-		offers_handler m_handler;
-		std::vector<rtc_offer> m_offers;
-	};
 
 	std::queue<offer_batch> m_offer_batches;
 };
