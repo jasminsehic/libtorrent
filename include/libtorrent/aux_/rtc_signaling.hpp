@@ -34,6 +34,7 @@ see LICENSE file.
 #include <vector>
 #include <chrono>
 #include <unordered_map>
+#include <utility>
 
 namespace rtc {
 	class PeerConnection;
@@ -55,7 +56,6 @@ constexpr std::size_t RTC_MAX_MESSAGE_SIZE = 2 * RTC_MAX_SDP_SIZE;
 
 using rtc_offer_id = std::array<char, RTC_OFFER_ID_LEN>;
 
-
 struct rtc_answer
 {
 	rtc_offer_id offer_id;
@@ -71,7 +71,6 @@ struct rtc_offer
 	std::function<void(peer_id const& pid, rtc_answer const& answer)> answer_callback;
 };
 
-
 // Per-offer completion guard. Accessed only on the libtorrent network thread.
 struct rtc_offer_completion_guard
 {
@@ -86,7 +85,7 @@ private:
 	bool m_reported = false;
 };
 
-/* Shared offer-batch accumulator used by rtc_signaling and its regression tests. */
+// Shared offer-batch accumulator used by rtc_signaling and its regression tests.
 struct rtc_offer_batch
 {
 	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
