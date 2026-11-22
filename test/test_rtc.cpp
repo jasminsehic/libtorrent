@@ -445,19 +445,22 @@ void test_offer_setup_failure_wins_over_queued_description()
 	aux::rtc_offer_batch_queue batches;
 	batches.emplace(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
 		++calls;
-		TEST_EQUAL(ec, boost::system::errc::make_error_code(
-			boost::system::errc::resource_unavailable_try_again));
+		TEST_EQUAL(ec,
+			boost::system::errc::make_error_code(
+				boost::system::errc::resource_unavailable_try_again));
 		TEST_CHECK(offers.empty());
 		success = true;
 	});
 
 	auto reported = std::make_shared<aux::rtc_offer_completion_guard>();
 	post(io_context, [reported, &batches] {
-		if (!reported->claim()) return;
+		if (!reported->claim())
+			return;
 		batches.add(error_code{}, rtc_offer{{}, {}, "queued-description", {}});
 	});
 	post(io_context, [reported, &batches] {
-		if (!reported->claim()) return;
+		if (!reported->claim())
+			return;
 		batches.add(error_code{}, rtc_offer{{}, {}, "duplicate-description", {}});
 	});
 
@@ -465,7 +468,8 @@ void test_offer_setup_failure_wins_over_queued_description()
 	TEST_CHECK(reported->claim());
 	post(io_context, [&batches] {
 		batches.add(boost::system::errc::make_error_code(
-			boost::system::errc::resource_unavailable_try_again), rtc_offer{});
+						boost::system::errc::resource_unavailable_try_again),
+			rtc_offer{});
 	});
 	run_test();
 	TEST_EQUAL(calls, 1);
@@ -480,14 +484,17 @@ void test_offer_duplicate_description_does_not_complete_next_batch()
 		++first_calls;
 		TEST_CHECK(!ec);
 		TEST_EQUAL(int(offers.size()), 1);
-		if (!offers.empty()) TEST_EQUAL(offers[0].sdp, "first-description");
+		if (!offers.empty())
+			TEST_EQUAL(offers[0].sdp, "first-description");
 	});
 	batches.emplace(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
 		++second_calls;
 		TEST_CHECK(!ec);
 		TEST_EQUAL(int(offers.size()), 1);
-		if (!offers.empty()) TEST_EQUAL(offers[0].sdp, "second-description");
-		if (first_calls == 1 && second_calls == 1) success = true;
+		if (!offers.empty())
+			TEST_EQUAL(offers[0].sdp, "second-description");
+		if (first_calls == 1 && second_calls == 1)
+			success = true;
 	});
 
 	auto first = std::make_shared<aux::rtc_offer_completion_guard>();
