@@ -441,84 +441,60 @@ void test_write_exact_chunk_boundary()
 
 void test_offer_creation_failure_ignores_queued_description()
 {
-	session_mock ses(io_context);
-	aux::torrent tor(ses,
-		false,
-		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
 	int calls = 0;
-	int injection_count = 0;
-	auto sig = std::make_shared<rtc_signaling>(
-		io_context,
-		&tor,
-		[](rtc_stream_init) {},
-		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
-			++injection_count;
-			on_description(error_code{}, "queued-description");
-			on_description(error_code{}, "duplicate-description");
-			throw std::runtime_error("simulated post-setup failure");
-		});
-	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
-		++calls;
-		TEST_EQUAL(ec,
-			boost::system::errc::make_error_code(
+	rtc_offer_id id{};
+	peer_id pid;
+	aux::rtc_offer_completion completion(io_context, id, pid,
+		[&](error_code const& ec, rtc_offer const& offer) {
+			++calls;
+			TEST_CHECK(ec == boost::system::errc::make_error_code(
 				boost::system::errc::resource_unavailable_try_again));
-		TEST_CHECK(offers.empty());
-		success = true;
-	});
+			TEST_CHECK(offer.sdp.empty());
+			success = true;
+		});
+	auto callback = completion.description_callback();
+	callback(error_code{}, "queued-description");
+	callback(error_code{}, "duplicate-description");
+	completion.fail(boost::system::errc::make_error_code(
+		boost::system::errc::resource_unavailable_try_again));
 	run_test();
-	TEST_EQUAL(injection_count, 1);
 	TEST_EQUAL(calls, 1);
-	sig->close();
 }
 
 void test_offer_duplicate_description_does_not_complete_next_batch()
 {
-	session_mock ses(io_context);
-	aux::torrent tor(ses,
-		false,
-		parse_magnet_uri("magnet:?xt=urn:btih:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"));
-	int injections = 0;
 	int first_calls = 0;
 	int second_calls = 0;
-	auto sig = std::make_shared<rtc_signaling>(
-		io_context,
-		&tor,
-		[](rtc_stream_init) {},
-		[&](rtc::Configuration&, rtc_signaling::description_handler const& on_description) {
-			++injections;
-			if (injections == 1)
-			{
-				on_description(error_code{}, "first-description");
-				on_description(error_code{}, "duplicate-description");
-			}
-			else if (injections == 2)
-			{
-				on_description(error_code{}, "second-description");
-			}
+	rtc_offer_id first_id{};
+	rtc_offer_id second_id{};
+	first_id[0] = 1;
+	second_id[0] = 2;
+	auto maybe_finish = [&] {
+		if (first_calls == 1 && second_calls == 1) success = true;
+	};
+	aux::rtc_offer_completion first(io_context, first_id, peer_id{},
+		[&](error_code const& ec, rtc_offer offer) {
+			++first_calls;
+			TEST_CHECK(!ec);
+			TEST_CHECK(offer.id == first_id);
+			TEST_CHECK(offer.sdp == "first-description");
+			maybe_finish();
 		});
-	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
-		++first_calls;
-		TEST_CHECK(!ec);
-		TEST_EQUAL(int(offers.size()), 1);
-		if (!offers.empty())
-			TEST_CHECK(offers[0].sdp == "first-description");
-		if (first_calls == 1 && second_calls == 1)
-			success = true;
-	});
-	sig->generate_offers(1, [&](error_code const& ec, std::vector<rtc_offer> const& offers) {
-		++second_calls;
-		TEST_CHECK(!ec);
-		TEST_EQUAL(int(offers.size()), 1);
-		if (!offers.empty())
-			TEST_CHECK(offers[0].sdp == "second-description");
-		if (first_calls == 1 && second_calls == 1)
-			success = true;
-	});
+	aux::rtc_offer_completion second(io_context, second_id, peer_id{},
+		[&](error_code const& ec, rtc_offer offer) {
+			++second_calls;
+			TEST_CHECK(!ec);
+			TEST_CHECK(offer.id == second_id);
+			TEST_CHECK(offer.sdp == "second-description");
+			maybe_finish();
+		});
+	auto first_callback = first.description_callback();
+	first_callback(error_code{}, "first-description");
+	first_callback(error_code{}, "duplicate-description");
+	second.description_callback()(error_code{}, "second-description");
 	run_test();
-	TEST_EQUAL(injections, 2);
 	TEST_EQUAL(first_calls, 1);
 	TEST_EQUAL(second_calls, 1);
-	sig->close();
 }
 
 } // namespace
