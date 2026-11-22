@@ -38,7 +38,6 @@ see LICENSE file.
 namespace rtc {
 	class PeerConnection;
 	class DataChannel;
-	struct Configuration;
 }
 
 namespace libtorrent {
@@ -55,6 +54,28 @@ constexpr std::size_t RTC_MAX_SDP_SIZE = 64 * 1024;
 constexpr std::size_t RTC_MAX_MESSAGE_SIZE = 2 * RTC_MAX_SDP_SIZE;
 
 using rtc_offer_id = std::array<char, RTC_OFFER_ID_LEN>;
+
+
+// Coordinates the potentially competing description callback and synchronous
+// offer-setup failure. All completion decisions are made on the network thread.
+struct rtc_offer_completion
+{
+	using description_handler =
+		std::function<void(error_code const&, std::string const& description)>;
+	using completion_handler = std::function<void(error_code const&, rtc_offer)>;
+
+	rtc_offer_completion(io_context& ioc, rtc_offer_id id, peer_id pid
+		, completion_handler handler);
+	description_handler description_callback() const;
+	void fail(error_code ec);
+
+private:
+	io_context& m_io_context;
+	rtc_offer_id m_id;
+	peer_id m_pid;
+	completion_handler m_handler;
+	std::shared_ptr<bool> m_reported;
+};
 
 struct rtc_answer
 {
@@ -76,15 +97,7 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 {
 	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
 	using rtc_stream_handler = std::function<void(rtc_stream_init)>;
-	using description_handler =
-		std::function<void(error_code const&, std::string const& description)>;
-	using rtc_configuration_hook =
-		std::function<void(rtc::Configuration&, description_handler const&)>;
-
-	explicit rtc_signaling(io_context& ioc,
-		torrent* t,
-		rtc_stream_handler handler,
-		rtc_configuration_hook configuration_hook = {});
+	explicit rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler);
 	~rtc_signaling();
 	rtc_signaling& operator=(rtc_signaling const&) = delete;
 	rtc_signaling(rtc_signaling const&) = delete;
@@ -126,7 +139,6 @@ private:
 	io_context& m_io_context;
 	torrent* m_torrent;
 	rtc_stream_handler m_rtc_stream_handler;
-	rtc_configuration_hook m_rtc_configuration_hook;
 
 	std::unordered_map<rtc_offer_id, connection, boost::hash<rtc_offer_id>> m_connections;
 	int m_num_incoming_connections = 0;
