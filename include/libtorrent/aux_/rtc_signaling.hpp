@@ -85,6 +85,7 @@ struct rtc_offer_completion_guard
 private:
 	bool m_reported = false;
 };
+
 // This class handles client signaling for WebRTC DataChannels
 struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<rtc_signaling>
 {
