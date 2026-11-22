@@ -174,12 +174,16 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 					// network thread before consulting the completion guard.
 					auto& io_context = self->m_io_context;
 					post(io_context,
-						[signaling = std::move(self), reported, offer_id, pid, ec,
+						[signaling = std::move(self),
+							reported,
+							offer_id,
+							pid,
+							ec,
 							description = std::string(sdp)]() mutable {
 							if (std::exchange(*reported, true))
 								return;
 							signaling->on_generated_offer(
-								 ec, rtc_offer{offer_id, pid, std::move(description), {}});
+								ec, rtc_offer{offer_id, pid, std::move(description), {}});
 						});
 				};
 
@@ -194,8 +198,12 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 					return;
 
 				auto& io_context = self->m_io_context;
-				post(io_context, std::bind(&rtc_signaling::on_data_channel,
-					std::move(self), error_code{}, std::move(offer_id), std::move(dc_)));
+				post(io_context,
+					std::bind(&rtc_signaling::on_data_channel,
+						std::move(self),
+						error_code{},
+						std::move(offer_id),
+						std::move(dc_)));
 			});
 
 			// We need to maintain the DataChannel alive
