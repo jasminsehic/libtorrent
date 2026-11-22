@@ -72,25 +72,18 @@ struct rtc_offer
 };
 
 
-// Coordinates the potentially competing description callback and synchronous
-// offer-setup failure. All completion decisions are made on the network thread.
-struct rtc_offer_completion
+// Per-offer completion guard. Accessed only on the libtorrent network thread.
+struct rtc_offer_completion_guard
 {
-	using description_handler =
-		std::function<void(error_code const&, std::string const& description)>;
-	using completion_handler = std::function<void(error_code const&, rtc_offer)>;
-
-	rtc_offer_completion(io_context& ioc, rtc_offer_id id, peer_id pid
-		, completion_handler handler);
-	description_handler description_callback() const;
-	void fail(error_code ec);
+	bool claim() noexcept
+	{
+		if (m_reported) return false;
+		m_reported = true;
+		return true;
+	}
 
 private:
-	io_context& m_io_context;
-	rtc_offer_id m_id;
-	peer_id m_pid;
-	completion_handler m_handler;
-	std::shared_ptr<bool> m_reported;
+	bool m_reported = false;
 };
 // This class handles client signaling for WebRTC DataChannels
 struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<rtc_signaling>
