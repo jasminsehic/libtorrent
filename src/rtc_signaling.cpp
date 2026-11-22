@@ -172,7 +172,7 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 							if (!reported->claim())
 								return;
 							signaling->on_generated_offer(
-									ec, rtc_offer{offer_id, pid, std::move(description), {}});
+								ec, rtc_offer{offer_id, pid, std::move(description), {}});
 						});
 				};
 
@@ -182,10 +182,15 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 				// Warning: this is called from another thread
 				auto self = weak_this.lock();
 				auto dc_ = weak_dc.lock();
-				if (!self || !dc_) return;
+				if (!self || !dc_)
+					return;
 				auto& io_context = self->m_io_context;
-				post(io_context, std::bind(&rtc_signaling::on_data_channel,
-					std::move(self), error_code{}, std::move(offer_id), std::move(dc_)));
+				post(io_context,
+					std::bind(&rtc_signaling::on_data_channel,
+						std::move(self),
+						error_code{},
+						std::move(offer_id),
+						std::move(dc_)));
 			});
 			conn.data_channel = std::move(dc);
 		}
