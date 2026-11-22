@@ -34,11 +34,11 @@ see LICENSE file.
 #include <vector>
 #include <chrono>
 #include <unordered_map>
+#include <utility>
 
 namespace rtc {
 	class PeerConnection;
 	class DataChannel;
-	struct Configuration;
 }
 
 namespace libtorrent {
@@ -71,20 +71,81 @@ struct rtc_offer
 	std::function<void(peer_id const& pid, rtc_answer const& answer)> answer_callback;
 };
 
+// Per-offer completion guard. Accessed only on the libtorrent network thread.
+struct rtc_offer_completion_guard
+{
+	bool claim() noexcept
+	{
+		if (m_reported)
+			return false;
+		m_reported = true;
+		return true;
+	}
+
+private:
+	bool m_reported = false;
+};
+
+// Shared offer-batch accumulator used by rtc_signaling and its regression tests.
+struct rtc_offer_batch
+{
+	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
+
+	rtc_offer_batch(int count, offers_handler handler)
+		: m_count(count)
+		, m_handler(std::move(handler))
+	{
+		if (m_count == 0)
+			m_handler(error_code{}, {});
+	}
+
+	void add(error_code const& ec, rtc_offer offer)
+	{
+		if (!ec)
+			m_offers.push_back(std::move(offer));
+		else
+			--m_count;
+
+		if (is_complete())
+			m_handler(m_offers.empty() ? ec : error_code(), m_offers);
+	}
+
+	bool is_complete() const { return int(m_offers.size()) == m_count; }
+
+private:
+	int m_count;
+	offers_handler m_handler;
+	std::vector<rtc_offer> m_offers;
+};
+
+struct rtc_offer_batch_queue
+{
+	using offers_handler = rtc_offer_batch::offers_handler;
+
+	void emplace(int count, offers_handler handler)
+	{
+		m_batches.emplace(count, std::move(handler));
+	}
+
+	void add(error_code const& ec, rtc_offer offer)
+	{
+		while (!m_batches.empty() && m_batches.front().is_complete())
+			m_batches.pop();
+
+		if (!m_batches.empty())
+			m_batches.front().add(ec, std::move(offer));
+	}
+
+private:
+	std::queue<rtc_offer_batch> m_batches;
+};
+
 // This class handles client signaling for WebRTC DataChannels
 struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<rtc_signaling>
 {
 	using offers_handler = std::function<void(error_code const&, std::vector<rtc_offer> const&)>;
 	using rtc_stream_handler = std::function<void(rtc_stream_init)>;
-	using description_handler =
-		std::function<void(error_code const&, std::string const& description)>;
-	using rtc_configuration_hook =
-		std::function<void(rtc::Configuration&, description_handler const&)>;
-
-	explicit rtc_signaling(io_context& ioc,
-		torrent* t,
-		rtc_stream_handler handler,
-		rtc_configuration_hook configuration_hook = {});
+	explicit rtc_signaling(io_context& ioc, torrent* t, rtc_stream_handler handler);
 	~rtc_signaling();
 	rtc_signaling& operator=(rtc_signaling const&) = delete;
 	rtc_signaling(rtc_signaling const&) = delete;
@@ -104,6 +165,9 @@ struct TORRENT_EXTRA_EXPORT rtc_signaling final : std::enable_shared_from_this<r
 #endif
 
 private:
+	using description_handler =
+		std::function<void(error_code const&, std::string const& description)>;
+
 	struct connection
 	{
 		explicit connection(io_context& ioc) : timer(ioc) {}
@@ -126,26 +190,12 @@ private:
 	io_context& m_io_context;
 	torrent* m_torrent;
 	rtc_stream_handler m_rtc_stream_handler;
-	rtc_configuration_hook m_rtc_configuration_hook;
 
 	std::unordered_map<rtc_offer_id, connection, boost::hash<rtc_offer_id>> m_connections;
 	int m_num_incoming_connections = 0;
 	std::queue<rtc_offer_id> m_queue;
 
-	struct offer_batch
-	{
-		offer_batch(int count, offers_handler handler);
-
-		void add(error_code const& ec, rtc_offer offer);
-		bool is_complete() const;
-
-	private:
-		int m_count;
-		offers_handler m_handler;
-		std::vector<rtc_offer> m_offers;
-	};
-
-	std::queue<offer_batch> m_offer_batches;
+	rtc_offer_batch_queue m_offer_batches;
 };
 
 }
