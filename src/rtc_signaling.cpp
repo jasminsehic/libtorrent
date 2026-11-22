@@ -159,14 +159,21 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 				[weak_this = weak_from_this(), offer_id, pid, reported](
 					error_code const& ec, std::string const& sdp) {
 					auto self = weak_this.lock();
-					if (!self) return;
+					if (!self)
+						return;
 					auto& io_context = self->m_io_context;
-					post(io_context, [signaling = std::move(self), reported, offer_id, pid, ec
-						, description = std::string(sdp)]() mutable {
-						if (!reported->claim()) return;
-						signaling->on_generated_offer(ec,
-							rtc_offer{offer_id, pid, std::move(description), {}});
-					});
+					post(io_context,
+						[signaling = std::move(self),
+							reported,
+							offer_id,
+							pid,
+							ec,
+							description = std::string(sdp)]() mutable {
+							if (!reported->claim())
+								return;
+							signaling->on_generated_offer(
+									ec, rtc_offer{offer_id, pid, std::move(description), {}});
+						});
 				};
 
 			auto& conn = create_connection(offer_id, on_description);
@@ -189,7 +196,8 @@ void rtc_signaling::generate_offers(int count, offers_handler handler)
 			debug_log("*** RTC signaling could not create offer: %s", e.what());
 #endif
 			m_connections.erase(offer_id);
-			if (reported) reported->claim();
+			if (reported)
+				reported->claim();
 			post(m_io_context, [self = shared_from_this(), offer_id, pid] {
 				self->on_generated_offer(
 					errc::make_error_code(errc::resource_unavailable_try_again),
