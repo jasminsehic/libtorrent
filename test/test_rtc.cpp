@@ -439,7 +439,7 @@ void test_write_exact_chunk_boundary()
 	sig2->close();
 }
 
-void test_offer_creation_failure_ignores_queued_description()
+void test_offer_setup_failure_wins_over_queued_description()
 {
 	int calls = 0;
 	auto reported = std::make_shared<aux::rtc_offer_completion_guard>();
@@ -464,7 +464,7 @@ void test_offer_creation_failure_ignores_queued_description()
 	TEST_EQUAL(calls, 1);
 }
 
-void test_offer_duplicate_description_does_not_complete_next_batch()
+void test_offer_duplicate_description_is_ignored_per_offer()
 {
 	int first_calls = 0;
 	int second_calls = 0;
@@ -492,11 +492,11 @@ TORRENT_TEST(signaling_offers) { test_offers(); }
 TORRENT_TEST(signaling_connectivity) { test_connectivity(); }
 TORRENT_TEST(signaling_stream) { test_stream(); }
 TORRENT_TEST(write_exact_chunk_boundary) { test_write_exact_chunk_boundary(); }
-TORRENT_TEST(signaling_offer_creation_failure_ignores_queued_description)
+TORRENT_TEST(signaling_offer_setup_failure_wins_over_queued_description)
 {
 	test_offer_creation_failure_ignores_queued_description();
 }
-TORRENT_TEST(signaling_offer_duplicate_description_does_not_complete_next_batch)
+TORRENT_TEST(signaling_offer_duplicate_description_is_ignored_per_offer)
 {
 	test_offer_duplicate_description_does_not_complete_next_batch();
 }
